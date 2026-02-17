@@ -98,6 +98,7 @@ export default function DemandMatrixPage() {
   const [selectedRegionIds, setSelectedRegionIds] = useState<number[]>([]);
   const [selectedApprovalStatuses, setSelectedApprovalStatuses] = useState<string[]>([]);
   const [year, setYear] = useState<number>(2026);
+  const [importYear, setImportYear] = useState<number>(2026);
   const [viewMode, setViewMode] = useState<ViewMode>('professions-x-regions');
 
   const { data: districts } = useFederalDistricts();
@@ -175,16 +176,16 @@ export default function DemandMatrixPage() {
   };
 
   const uploadProps: UploadProps = {
-    accept: '.csv',
+    accept: '.csv,.xlsx',
     showUploadList: false,
     customRequest: async ({ file, onError, onSuccess }) => {
       try {
         const formData = new FormData();
         formData.append('file', file as File);
-        formData.append('year', String(year));
+        formData.append('import_year', String(importYear));
         const result = await importDemandMatrix.mutateAsync(formData);
         message.success(
-          `Импорт завершён: +профессии ${result.created_professions}, обновлено связей ${result.updated_statuses}, создано связей ${result.created_statuses}`
+          `Импорт (${result.format || 'csv'}) завершён: +профессии ${result.created_professions}, обновлено связей ${result.updated_statuses}, создано связей ${result.created_statuses}`
         );
         onSuccess?.(result as any);
       } catch (err: any) {
@@ -481,9 +482,16 @@ export default function DemandMatrixPage() {
                 loading={importDemandMatrix.isPending}
                 type="default"
               >
-                Импорт по востребованности
+                Импорт востребованности
               </Button>
             </Upload>
+            <Select
+              placeholder="Год импорта"
+              value={importYear}
+              onChange={setImportYear}
+              options={YEAR_OPTIONS}
+              style={{ width: 130 }}
+            />
           </div>
         </div>
 

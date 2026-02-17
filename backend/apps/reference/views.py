@@ -1,5 +1,6 @@
 import csv
 import io
+from typing import List
 
 from rest_framework import viewsets, generics, permissions, status
 from rest_framework.decorators import action
@@ -8,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Count, Q
+from openpyxl import load_workbook
 
 from .models import (
     FederalDistrict, Region, Profession, ProfessionDemandStatus,
@@ -140,6 +142,283 @@ class DemandMatrixImportView(APIView):
     def _norm_header(value):
         return str(value).strip().lower().replace(" ", "_")
 
+    @staticmethod
+    def _clean_cell(value):
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    def _read_csv_rows(self, raw: bytes) -> List[List[str]]:
+        decoded = None
+        for enc in ("utf-8-sig", "cp1251", "utf-8"):
+            try:
+                decoded = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if decoded is None:
+            raise ValueError("Cannot decode file. Use UTF-8 or CP1251 CSV.")
+        sample = decoded[:2048]
+        delimiter = ";" if sample.count(";") >= sample.count(",") else ","
+        reader = csv.reader(io.StringIO(decoded), delimiter=delimiter)
+        return [[self._clean_cell(c) for c in row] for row in reader]
+
+    def _read_xlsx_rows(self, raw: bytes) -> List[List[str]]:
+        wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        ws = wb.active
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            rows.append([self._clean_cell(c) for c in row])
+        return rows
+
+    def _get_or_create_profession(
+        self,
+        profession_number,
+        profession_name,
+        profession_by_number,
+        profession_by_name,
+    ):
+        created_profession = False
+        updated_profession = False
+        profession = None
+        if profession_number is not None:
+            profession = profession_by_number.get(profession_number)
+        if profession is None and profession_name:
+            profession = profession_by_name.get(profession_name.lower())
+
+        if profession is None:
+            new_number = profession_number
+            if new_number is None:
+                max_number = (
+                    Profession.objects.order_by("-number")
+                    .values_list("number", flat=True)
+                    .first()
+                    or 0
+                )
+                new_number = max_number + 1
+            profession = Profession.objects.create(
+                number=new_number,
+                name=profession_name or f"Профессия {new_number}",
+            )
+            created_profession = True
+            profession_by_number[profession.number] = profession
+            profession_by_name[profession.name.strip().lower()] = profession
+        elif profession_name and profession.name != profession_name:
+            profession.name = profession_name
+            profession.save(update_fields=["name"])
+            updated_profession = True
+            profession_by_name[profession.name.strip().lower()] = profession
+
+        return profession, created_profession, updated_profession
+
+    def _import_wide_matrix(
+        self,
+        rows,
+        default_year,
+        region_by_name,
+        profession_by_number,
+        profession_by_name,
+    ):
+        if len(rows) < 2:
+            raise ValueError("Matrix file is too short.")
+
+        header = rows[0]
+        region_columns = []
+        for idx in range(2, len(header)):
+            name = self._clean_cell(header[idx]).lower()
+            if not name:
+                continue
+            region = region_by_name.get(name)
+            if region:
+                region_columns.append((idx, region))
+
+        if not region_columns:
+            raise ValueError("No region columns found in matrix header.")
+
+        created_professions = 0
+        updated_professions = 0
+        created_statuses = 0
+        updated_statuses = 0
+        skipped_rows = 0
+        errors = []
+
+        for row_idx, row in enumerate(rows[2:], start=3):  # skip header + totals row
+            if not row or len(row) < 2:
+                skipped_rows += 1
+                continue
+
+            raw_number = self._clean_cell(row[0]) if len(row) > 0 else ""
+            profession_name = self._clean_cell(row[1]) if len(row) > 1 else ""
+
+            if not profession_name or profession_name.lower() == "итого":
+                skipped_rows += 1
+                continue
+
+            profession_number = None
+            if raw_number:
+                try:
+                    profession_number = int(float(raw_number))
+                except Exception:
+                    profession_number = None
+
+            try:
+                profession, was_created, was_updated = self._get_or_create_profession(
+                    profession_number,
+                    profession_name,
+                    profession_by_number,
+                    profession_by_name,
+                )
+                if was_created:
+                    created_professions += 1
+                if was_updated:
+                    updated_professions += 1
+
+                for col_idx, region in region_columns:
+                    cell_val = row[col_idx] if col_idx < len(row) else ""
+                    is_demanded = self._to_bool(cell_val)
+                    _, created = ProfessionDemandStatus.objects.update_or_create(
+                        profession=profession,
+                        region=region,
+                        year=default_year,
+                        defaults={"is_demanded": is_demanded},
+                    )
+                    if created:
+                        created_statuses += 1
+                    else:
+                        updated_statuses += 1
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Row {row_idx}: {exc}")
+
+        return {
+            "created_professions": created_professions,
+            "updated_professions": updated_professions,
+            "created_statuses": created_statuses,
+            "updated_statuses": updated_statuses,
+            "skipped_rows": skipped_rows,
+            "errors_count": len(errors),
+            "errors": errors[:20],
+            "format": "wide_matrix",
+        }
+
+    def _import_row_based(
+        self,
+        rows,
+        default_year,
+        region_by_name,
+        region_by_code,
+        profession_by_number,
+        profession_by_name,
+    ):
+        if not rows:
+            raise ValueError("CSV has no rows.")
+        header = rows[0]
+        header_map = {self._norm_header(h): idx for idx, h in enumerate(header) if h}
+
+        def pick(*aliases):
+            for alias in aliases:
+                if alias in header_map:
+                    return header_map[alias]
+            return None
+
+        profession_number_col = pick("profession_number", "number", "код_профессии")
+        profession_name_col = pick("profession_name", "name", "профессия")
+        region_col = pick("region_name", "region", "регион")
+        region_code_col = pick("region_code", "код_региона")
+        demanded_col = pick("is_demanded", "demanded", "востребована")
+        year_col = pick("year", "год")
+
+        if demanded_col is None or (
+            profession_name_col is None and profession_number_col is None
+        ):
+            raise ValueError(
+                "Required columns: demanded + profession_name or profession_number."
+            )
+
+        created_professions = 0
+        updated_professions = 0
+        created_statuses = 0
+        updated_statuses = 0
+        skipped_rows = 0
+        errors = []
+
+        for row_idx, row in enumerate(rows[1:], start=2):
+            try:
+                if not row:
+                    skipped_rows += 1
+                    continue
+                profession_number = None
+                if profession_number_col is not None and profession_number_col < len(row):
+                    raw_number = self._clean_cell(row[profession_number_col])
+                    if raw_number:
+                        profession_number = int(float(raw_number))
+
+                profession_name = ""
+                if profession_name_col is not None and profession_name_col < len(row):
+                    profession_name = self._clean_cell(row[profession_name_col])
+                if not profession_name and profession_number is None:
+                    skipped_rows += 1
+                    continue
+
+                region = None
+                if region_col is not None and region_col < len(row):
+                    region_name = self._clean_cell(row[region_col]).lower()
+                    if region_name:
+                        region = region_by_name.get(region_name)
+                if (
+                    region is None
+                    and region_code_col is not None
+                    and region_code_col < len(row)
+                ):
+                    region_code = self._clean_cell(row[region_code_col]).lower()
+                    if region_code:
+                        region = region_by_code.get(region_code)
+                if region is None:
+                    skipped_rows += 1
+                    continue
+
+                demanded_raw = row[demanded_col] if demanded_col < len(row) else ""
+                is_demanded = self._to_bool(demanded_raw)
+                year = default_year
+                if year_col is not None and year_col < len(row):
+                    year_raw = self._clean_cell(row[year_col])
+                    if year_raw:
+                        year = int(float(year_raw))
+
+                profession, was_created, was_updated = self._get_or_create_profession(
+                    profession_number,
+                    profession_name,
+                    profession_by_number,
+                    profession_by_name,
+                )
+                if was_created:
+                    created_professions += 1
+                if was_updated:
+                    updated_professions += 1
+
+                _, created = ProfessionDemandStatus.objects.update_or_create(
+                    profession=profession,
+                    region=region,
+                    year=year,
+                    defaults={"is_demanded": is_demanded},
+                )
+                if created:
+                    created_statuses += 1
+                else:
+                    updated_statuses += 1
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Row {row_idx}: {exc}")
+
+        return {
+            "created_professions": created_professions,
+            "updated_professions": updated_professions,
+            "created_statuses": created_statuses,
+            "updated_statuses": updated_statuses,
+            "skipped_rows": skipped_rows,
+            "errors_count": len(errors),
+            "errors": errors[:20],
+            "format": "row_based",
+        }
+
     def post(self, request):
         if not getattr(request.user, "is_admin_role", False):
             return Response(
@@ -155,63 +434,23 @@ class DemandMatrixImportView(APIView):
             )
 
         raw = upload.read()
-        decoded = None
-        for enc in ("utf-8-sig", "cp1251", "utf-8"):
-            try:
-                decoded = raw.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
-        if decoded is None:
-            return Response(
-                {"detail": "Cannot decode file. Use UTF-8 or CP1251 CSV."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        csv_stream = io.StringIO(decoded)
         try:
-            sample = decoded[:2048]
-            delimiter = ";" if sample.count(";") >= sample.count(",") else ","
-            reader = csv.DictReader(csv_stream, delimiter=delimiter)
-        except Exception:
+            filename = (upload.name or "").lower()
+            if filename.endswith(".xlsx"):
+                rows = self._read_xlsx_rows(raw)
+            else:
+                rows = self._read_csv_rows(raw)
+        except Exception as exc:  # noqa: BLE001
             return Response(
-                {"detail": "Invalid CSV format."},
+                {"detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not reader.fieldnames:
-            return Response(
-                {"detail": "CSV has no headers."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        header_map = {self._norm_header(h): h for h in reader.fieldnames if h}
-
-        def pick(*aliases):
-            for alias in aliases:
-                if alias in header_map:
-                    return header_map[alias]
-            return None
-
-        profession_number_col = pick("profession_number", "number", "код_профессии")
-        profession_name_col = pick("profession_name", "name", "профессия")
-        region_col = pick("region_name", "region", "регион")
-        region_code_col = pick("region_code", "код_региона")
-        demanded_col = pick("is_demanded", "demanded", "востребована")
-        year_col = pick("year", "год")
-
-        if not demanded_col or (not profession_name_col and not profession_number_col):
-            return Response(
-                {
-                    "detail": (
-                        "Required columns: demanded + profession_name or profession_number. "
-                        "Recommended: profession_number, profession_name, region_name, is_demanded, year."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        default_year = int(request.data.get("year") or 2026)
+        default_year = int(
+            request.data.get("import_year")
+            or request.data.get("year")
+            or 2026
+        )
 
         region_by_name = {r.name.strip().lower(): r for r in Region.objects.all()}
         region_by_code = {str(r.code).strip().lower(): r for r in Region.objects.all()}
@@ -220,99 +459,30 @@ class DemandMatrixImportView(APIView):
         }
         profession_by_name = {p.name.strip().lower(): p for p in Profession.objects.all()}
 
-        created_professions = 0
-        updated_professions = 0
-        created_statuses = 0
-        updated_statuses = 0
-        skipped_rows = 0
-        errors = []
+        # Detect wide matrix format: first row has region names from col>=2
+        first_row = rows[0] if rows else []
+        matched_regions = 0
+        for cell in first_row[2:]:
+            if self._clean_cell(cell).lower() in region_by_name:
+                matched_regions += 1
 
-        for row_idx, row in enumerate(reader, start=2):
-            try:
-                profession_number = None
-                if profession_number_col:
-                    raw_number = row.get(profession_number_col)
-                    if raw_number not in (None, ""):
-                        profession_number = int(str(raw_number).strip())
-
-                profession_name = (
-                    (row.get(profession_name_col) or "").strip()
-                    if profession_name_col
-                    else ""
-                )
-                if not profession_name and profession_number is None:
-                    skipped_rows += 1
-                    continue
-
-                region = None
-                if region_col:
-                    region_name = (row.get(region_col) or "").strip().lower()
-                    if region_name:
-                        region = region_by_name.get(region_name)
-                if region is None and region_code_col:
-                    region_code = (row.get(region_code_col) or "").strip().lower()
-                    if region_code:
-                        region = region_by_code.get(region_code)
-                if region is None:
-                    skipped_rows += 1
-                    continue
-
-                is_demanded = self._to_bool(row.get(demanded_col))
-                year = default_year
-                if year_col and row.get(year_col) not in (None, ""):
-                    year = int(str(row.get(year_col)).strip())
-
-                profession = None
-                if profession_number is not None:
-                    profession = profession_by_number.get(profession_number)
-                if profession is None and profession_name:
-                    profession = profession_by_name.get(profession_name.lower())
-
-                if profession is None:
-                    # Add missing profession
-                    new_number = profession_number
-                    if new_number is None:
-                        max_number = Profession.objects.order_by("-number").values_list(
-                            "number", flat=True
-                        ).first() or 0
-                        new_number = max_number + 1
-                    profession = Profession.objects.create(
-                        number=new_number,
-                        name=profession_name or f"Профессия {new_number}",
-                    )
-                    created_professions += 1
-                    profession_by_number[profession.number] = profession
-                    profession_by_name[profession.name.strip().lower()] = profession
-                else:
-                    # Update profession name if provided and changed
-                    if profession_name and profession.name != profession_name:
-                        profession.name = profession_name
-                        profession.save(update_fields=["name"])
-                        updated_professions += 1
-                        profession_by_name[profession.name.strip().lower()] = profession
-
-                obj, created = ProfessionDemandStatus.objects.update_or_create(
-                    profession=profession,
-                    region=region,
-                    year=year,
-                    defaults={"is_demanded": is_demanded},
-                )
-                if created:
-                    created_statuses += 1
-                else:
-                    updated_statuses += 1
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"Row {row_idx}: {exc}")
-
-        response = {
-            "created_professions": created_professions,
-            "updated_professions": updated_professions,
-            "created_statuses": created_statuses,
-            "updated_statuses": updated_statuses,
-            "skipped_rows": skipped_rows,
-            "errors_count": len(errors),
-            "errors": errors[:20],
-        }
+        if matched_regions >= 5:
+            response = self._import_wide_matrix(
+                rows,
+                default_year,
+                region_by_name,
+                profession_by_number,
+                profession_by_name,
+            )
+        else:
+            response = self._import_row_based(
+                rows,
+                default_year,
+                region_by_name,
+                region_by_code,
+                profession_by_number,
+                profession_by_name,
+            )
         return Response(response, status=status.HTTP_200_OK)
 
 
