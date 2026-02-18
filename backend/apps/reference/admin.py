@@ -1,9 +1,25 @@
 from django.contrib import admin
 from .models import (
     FederalDistrict, Region, Profession, ProfessionDemandStatus,
-    ProfessionApprovalStatus, Program, FederalOperator, Contract,
+    ProfessionDemandStatusHistory, ProfessionApprovalStatus, Program, FederalOperator, Contract,
     ContractProgram, Quota,
 )
+
+
+class ProfessionDemandStatusHistoryInline(admin.TabularInline):
+    model = ProfessionDemandStatusHistory
+    extra = 0
+    can_delete = False
+    fields = [
+        "changed_at", "federal_operator", "profession", "region", "year",
+        "previous_is_demanded", "new_is_demanded",
+    ]
+    readonly_fields = fields
+    ordering = ["-changed_at"]
+    show_change_link = True
+
+    def has_add_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(FederalDistrict)
@@ -27,9 +43,33 @@ class ProfessionAdmin(admin.ModelAdmin):
 
 @admin.register(ProfessionDemandStatus)
 class ProfessionDemandStatusAdmin(admin.ModelAdmin):
-    list_display = ["profession", "region", "is_demanded", "year"]
-    list_filter = ["year", "is_demanded", "region__federal_district"]
+    list_display = ["federal_operator", "profession", "region", "is_demanded", "year"]
+    list_filter = ["year", "is_demanded", "federal_operator", "region__federal_district"]
     search_fields = ["profession__name", "region__name"]
+    inlines = [ProfessionDemandStatusHistoryInline]
+
+
+@admin.register(ProfessionDemandStatusHistory)
+class ProfessionDemandStatusHistoryAdmin(admin.ModelAdmin):
+    list_display = [
+        "changed_at", "federal_operator", "profession", "region", "year",
+        "previous_is_demanded", "new_is_demanded",
+    ]
+    list_filter = ["year", "new_is_demanded", "federal_operator", "region__federal_district"]
+    search_fields = ["profession__name", "region__name", "federal_operator__name", "federal_operator__short_name"]
+    readonly_fields = [
+        "changed_at", "demand_status", "federal_operator", "profession", "region",
+        "year", "previous_is_demanded", "new_is_demanded",
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(ProfessionApprovalStatus)
@@ -49,8 +89,8 @@ class ProgramAdmin(admin.ModelAdmin):
 
 @admin.register(FederalOperator)
 class FederalOperatorAdmin(admin.ModelAdmin):
-    list_display = ["name", "code"]
-    search_fields = ["name"]
+    list_display = ["name", "short_name"]
+    search_fields = ["name", "short_name"]
 
 
 @admin.register(Contract)

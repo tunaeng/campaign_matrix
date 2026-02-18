@@ -63,7 +63,7 @@ export interface ContractStatusEntry {
 export interface FederalOperator {
   id: number;
   name: string;
-  code: string;
+  short_name: string;
   description: string;
 }
 
@@ -179,8 +179,10 @@ export interface DemandMatrix {
     profession_name: string;
     regions: Record<string, boolean>;
     approvals: Record<string, string | null>;
+    region_missing_operators?: Record<string, { id: number; short_name: string }[]>;
   }[];
   year: number;
+  federal_operators?: { id: number; short_name: string }[];
 }
 
 export interface PaginatedResponse<T> {

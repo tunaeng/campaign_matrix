@@ -32,7 +32,7 @@ export default function StepBasicInfo({ data, onChange }: Props) {
             allowClear
             options={(operators?.results || []).map((op) => ({
               value: op.id,
-              label: op.name,
+              label: op.short_name?.trim() || op.name,
             }))}
           />
         </Form.Item>

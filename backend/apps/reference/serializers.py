@@ -36,17 +36,26 @@ class ProfessionSerializer(serializers.ModelSerializer):
 
     def get_demanded_regions_count(self, obj):
         year = self.context.get("year", 2026)
-        return obj.demand_statuses.filter(is_demanded=True, year=year).count()
+        return (
+            obj.demand_statuses.filter(is_demanded=True, year=year)
+            .values("region")
+            .distinct()
+            .count()
+        )
 
 
 class ProfessionDemandStatusSerializer(serializers.ModelSerializer):
     region_name = serializers.CharField(source="region.name", read_only=True)
     profession_name = serializers.CharField(source="profession.name", read_only=True)
+    federal_operator_name = serializers.CharField(
+        source="federal_operator.display_name", read_only=True
+    )
 
     class Meta:
         model = ProfessionDemandStatus
         fields = [
-            "id", "profession", "profession_name",
+            "id", "federal_operator", "federal_operator_name",
+            "profession", "profession_name",
             "region", "region_name", "is_demanded", "year",
         ]
 
@@ -69,7 +78,7 @@ class ProgramSerializer(serializers.ModelSerializer):
             {
                 "contract_id": e.contract_id,
                 "operator": e.contract.federal_operator_id,
-                "operator_name": e.contract.federal_operator.name if hasattr(e.contract, "federal_operator") else "",
+                "operator_name": e.contract.federal_operator.display_name if hasattr(e.contract, "federal_operator") else "",
                 "status": e.status,
                 "status_display": e.get_status_display(),
             }
@@ -80,12 +89,12 @@ class ProgramSerializer(serializers.ModelSerializer):
 class FederalOperatorSerializer(serializers.ModelSerializer):
     class Meta:
         model = FederalOperator
-        fields = ["id", "name", "code", "description"]
+        fields = ["id", "name", "short_name", "description"]
 
 
 class ContractSerializer(serializers.ModelSerializer):
     federal_operator_name = serializers.CharField(
-        source="federal_operator.name", read_only=True
+        source="federal_operator.display_name", read_only=True
     )
     status_display = serializers.CharField(source="get_status_display", read_only=True)
 
@@ -111,7 +120,7 @@ class ContractProgramSerializer(serializers.ModelSerializer):
 
 class QuotaSerializer(serializers.ModelSerializer):
     federal_operator_name = serializers.CharField(
-        source="federal_operator.name", read_only=True
+        source="federal_operator.display_name", read_only=True
     )
     program_name = serializers.CharField(
         source="program.name", read_only=True, default=None

@@ -215,6 +215,7 @@ class DemandMatrixImportView(APIView):
         self,
         rows,
         default_year,
+        federal_operator,
         region_by_name,
         profession_by_number,
         profession_by_name,
@@ -277,6 +278,7 @@ class DemandMatrixImportView(APIView):
                     cell_val = row[col_idx] if col_idx < len(row) else ""
                     is_demanded = self._to_bool(cell_val)
                     _, created = ProfessionDemandStatus.objects.update_or_create(
+                        federal_operator=federal_operator,
                         profession=profession,
                         region=region,
                         year=default_year,
@@ -304,6 +306,7 @@ class DemandMatrixImportView(APIView):
         self,
         rows,
         default_year,
+        federal_operator,
         region_by_name,
         region_by_code,
         profession_by_number,
@@ -396,6 +399,7 @@ class DemandMatrixImportView(APIView):
                     updated_professions += 1
 
                 _, created = ProfessionDemandStatus.objects.update_or_create(
+                    federal_operator=federal_operator,
                     profession=profession,
                     region=region,
                     year=year,
@@ -446,6 +450,20 @@ class DemandMatrixImportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        federal_operator_id = request.data.get("federal_operator_id") or request.data.get("federal_operator")
+        if not federal_operator_id:
+            return Response(
+                {"detail": "federal_operator_id is required for import."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            federal_operator = FederalOperator.objects.get(pk=int(federal_operator_id))
+        except (ValueError, FederalOperator.DoesNotExist):
+            return Response(
+                {"detail": "Invalid federal_operator_id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         default_year = int(
             request.data.get("import_year")
             or request.data.get("year")
@@ -470,6 +488,7 @@ class DemandMatrixImportView(APIView):
             response = self._import_wide_matrix(
                 rows,
                 default_year,
+                federal_operator,
                 region_by_name,
                 profession_by_number,
                 profession_by_name,
@@ -478,6 +497,7 @@ class DemandMatrixImportView(APIView):
             response = self._import_row_based(
                 rows,
                 default_year,
+                federal_operator,
                 region_by_name,
                 region_by_code,
                 profession_by_number,
@@ -526,9 +546,26 @@ class DemandMatrixView(generics.ListAPIView):
             ids = [int(x) for x in profession_ids.split(",")]
             statuses = statuses.filter(profession_id__in=ids)
 
-        demand_map = {}
-        for s in statuses:
-            demand_map[(s.profession_id, s.region_id)] = s.is_demanded
+        # All operators for "missing in" labels
+        operators = list(
+            FederalOperator.objects.values("id", "short_name", "name").order_by("name")
+        )
+        operator_display = {
+            o["id"]: (o["short_name"] or o["name"]).strip() or o["name"]
+            for o in operators
+        }
+        operator_ids = [o["id"] for o in operators]
+        operator_count = len(operator_ids)
+
+        # (profession_id, region_id) -> set(operator_id) where demand is True
+        demanded_by_cell = {}
+        for profession_id, region_id, operator_id, is_demanded in statuses.values_list(
+            "profession_id", "region_id", "federal_operator_id", "is_demanded"
+        ):
+            if not is_demanded:
+                continue
+            key = (profession_id, region_id)
+            demanded_by_cell.setdefault(key, set()).add(operator_id)
 
         # Fetch approval statuses
         approvals = ProfessionApprovalStatus.objects.filter(year=year)
@@ -539,37 +576,60 @@ class DemandMatrixView(generics.ListAPIView):
             ids = [int(x) for x in profession_ids.split(",")]
             approvals = approvals.filter(profession_id__in=ids)
 
-        approval_map = {}
-        for a in approvals:
-            approval_map[(a.profession_id, a.region_id)] = a.approval_status
+        approval_map = {
+            (profession_id, region_id): approval_status
+            for profession_id, region_id, approval_status in approvals.values_list(
+                "profession_id", "region_id", "approval_status"
+            )
+        }
 
         region_list = list(regions.values("id", "name"))
+        profession_list = list(professions.values("id", "number", "name"))
 
         result = []
-        for prof in professions:
+        for prof in profession_list:
             region_demands = {}
             region_approvals = {}
+            region_missing_operators = {}
             has_any = False
             for r in region_list:
-                val = demand_map.get((prof.id, r["id"]), False)
+                cell_key = (prof["id"], r["id"])
+                demanded_ops = demanded_by_cell.get(cell_key, set())
+                # demanded if at least one operator has demand
+                val = bool(demanded_ops)
                 region_demands[str(r["id"])] = val
                 region_approvals[str(r["id"])] = approval_map.get(
-                    (prof.id, r["id"]), None
+                    (prof["id"], r["id"]), None
                 )
+                # Send "missing in operators" only for partial mismatch:
+                # at least one operator has demand, but not all.
+                if val and len(demanded_ops) < operator_count:
+                    missing = [
+                        {"id": op_id, "short_name": operator_display[op_id]}
+                        for op_id in operator_ids
+                        if op_id not in demanded_ops
+                    ]
+                    if missing:
+                        region_missing_operators[str(r["id"])] = missing
                 if val:
                     has_any = True
             if demanded_only and not has_any:
                 continue
             result.append({
-                "profession_id": prof.id,
-                "profession_number": prof.number,
-                "profession_name": prof.name,
+                "profession_id": prof["id"],
+                "profession_number": prof["number"],
+                "profession_name": prof["name"],
                 "regions": region_demands,
                 "approvals": region_approvals,
+                "region_missing_operators": region_missing_operators,
             })
 
         return Response({
             "regions": region_list,
             "professions": result,
             "year": year,
+            "federal_operators": [
+                {"id": o["id"], "short_name": operator_display[o["id"]]}
+                for o in operators
+            ],
         })

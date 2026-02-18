@@ -1,6 +1,6 @@
 import csv
 from django.core.management.base import BaseCommand
-from apps.reference.models import Profession, Region, ProfessionDemandStatus
+from apps.reference.models import Profession, Region, ProfessionDemandStatus, FederalOperator
 
 
 class Command(BaseCommand):
@@ -19,12 +19,27 @@ class Command(BaseCommand):
             default=2026,
             help="Year for demand data (default: 2026)",
         )
+        parser.add_argument(
+            "--federal-operator",
+            type=int,
+            default=None,
+            help="Federal operator ID for demand data (default: first operator)",
+        )
 
     def handle(self, *args, **options):
         filepath = options["file"]
         year = options["year"]
-
-        self.stdout.write(f"Loading demand matrix from {filepath} for year {year}")
+        fo_id = options["federal_operator"]
+        if fo_id is not None:
+            federal_operator = FederalOperator.objects.get(pk=fo_id)
+        else:
+            federal_operator = FederalOperator.objects.order_by("id").first()
+            if not federal_operator:
+                self.stdout.write(self.style.ERROR("No FederalOperator in DB. Create one first."))
+                return
+        self.stdout.write(
+            f"Loading demand matrix from {filepath} for year {year}, operator {federal_operator.display_name}"
+        )
 
         region_map = {}
         for r in Region.objects.all():
@@ -86,6 +101,7 @@ class Command(BaseCommand):
                     is_demanded = value in ("да", "yes", "1", "true")
 
                     _, s_created = ProfessionDemandStatus.objects.update_or_create(
+                        federal_operator=federal_operator,
                         profession=profession,
                         region=region,
                         year=year,

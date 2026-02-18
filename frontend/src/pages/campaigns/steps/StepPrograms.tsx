@@ -120,7 +120,7 @@ export default function StepPrograms({ data, onChange }: Props) {
           onChange={setOperatorFilter}
           options={(operators?.results || []).map((op) => ({
             value: op.id,
-            label: op.name,
+            label: op.short_name?.trim() || op.name,
           }))}
         />
         <Space>

@@ -10,6 +10,7 @@ interface RegionMapViewProps {
   selectedProfessionId?: number;
   onSelectedProfessionChange?: (value: number | undefined) => void;
   showProfessionSelector?: boolean;
+  showDifferencesOnly?: boolean;
 }
 
 const APPROVAL_LABELS: Record<string, string> = {
@@ -56,6 +57,7 @@ export default function RegionMapView({
   selectedProfessionId,
   onSelectedProfessionChange,
   showProfessionSelector = true,
+  showDifferencesOnly = false,
 }: RegionMapViewProps) {
   const [internalSelectedProfessionId, setInternalSelectedProfessionId] = React.useState<
     number | undefined
@@ -117,14 +119,16 @@ export default function RegionMapView({
       const regionId = regionNameToId.get(cell.regionName) ?? null;
       let isDemanded = false;
       let approvalStatus: string | null = null;
+      let missingInOperators: { id: number; short_name: string }[] = [];
 
       if (regionId !== null && selectedProfession) {
         isDemanded = !!selectedProfession.regions[String(regionId)];
         const a = selectedProfession.approvals?.[String(regionId)];
         approvalStatus = a && a !== 'pending' ? a : null;
+        missingInOperators = selectedProfession.region_missing_operators?.[String(regionId)] ?? [];
       }
 
-      return { ...cell, regionId, isDemanded, approvalStatus };
+      return { ...cell, regionId, isDemanded, approvalStatus, missingInOperators };
     });
   }, [regionNameToId, selectedProfession]);
 
@@ -197,6 +201,11 @@ export default function RegionMapView({
 
             const hasDemand = regionCell.isDemanded;
             const approval = regionCell.approvalStatus;
+            const missingInOperators = regionCell.missingInOperators ?? [];
+            const hasMissingInOperators = missingInOperators.length > 0;
+            const showMissingInfo = showDifferencesOnly && hasMissingInOperators;
+            const passesDifferenceFilter =
+              !showDifferencesOnly || !selectedProfession || hasMissingInOperators;
             const hasData = hasDemand || !!approval;
             const borderStyle = getApprovalBorder(approval);
             const isHighlighted =
@@ -207,24 +216,27 @@ export default function RegionMapView({
               regionCell.regionId !== null ? demandedCountByRegion[String(regionCell.regionId)] || 0 : 0;
             const showCountMode = !selectedProfession;
 
-            return (
-              <Tooltip
-                key={key}
-                title={
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{regionCell.regionName}</div>
-                    {showCountMode ? (
-                      <div>Востребованных профессий: {demandedCount}</div>
-                    ) : (
-                      <>
-                        <div>{hasDemand ? '✓ Востребована' : '— Не востребована'}</div>
-                        {approval && <div>{APPROVAL_LABELS[approval]}</div>}
-                      </>
+            const tooltipTitle = (
+              <div>
+                <div style={{ fontWeight: 600 }}>{regionCell.regionName}</div>
+                {showCountMode ? (
+                  <div>Востребованных профессий: {demandedCount}</div>
+                ) : (
+                  <>
+                    <div>{hasDemand ? '✓ Востребована' : '— Не востребована'}</div>
+                    {approval && <div>{APPROVAL_LABELS[approval]}</div>}
+                    {showMissingInfo && (
+                      <div style={{ marginTop: 4, color: '#ff7875' }}>
+                        Отсутствует в: {missingInOperators.map((o) => o.short_name).join(', ')}
+                      </div>
                     )}
-                  </div>
-                }
-                placement="top"
-              >
+                  </>
+                )}
+              </div>
+            );
+
+            return (
+              <Tooltip key={key} title={tooltipTitle} placement="top">
                 <div
                   style={{
                     gridRow: r + 1,
@@ -232,11 +244,13 @@ export default function RegionMapView({
                     width: CELL,
                     height: CELL,
                     background: selectedProfession
-                      ? isHighlighted
-                        ? hasDemand
-                          ? '#b7eb8f'
-                          : '#e8e8e8'
-                        : '#efefef'
+                      ? passesDifferenceFilter
+                        ? isHighlighted
+                          ? hasDemand
+                            ? '#b7eb8f'
+                            : '#e8e8e8'
+                          : '#efefef'
+                        : '#f5f5f5'
                       : isHighlighted
                         ? '#e8e8e8'
                         : '#efefef',
@@ -250,8 +264,8 @@ export default function RegionMapView({
                     position: 'relative',
                     transition: 'transform 0.12s ease, box-shadow 0.12s ease',
                     border: '4px solid transparent',
-                    ...(isHighlighted ? borderStyle : {}),
-                    opacity: isHighlighted ? 1 : 0.55,
+                    ...(isHighlighted && passesDifferenceFilter ? borderStyle : {}),
+                    opacity: isHighlighted ? (passesDifferenceFilter ? 1 : 0.25) : 0.55,
                   }}
                   onMouseEnter={(e) => {
                     const el = e.currentTarget;
@@ -266,6 +280,20 @@ export default function RegionMapView({
                     el.style.boxShadow = '';
                   }}
                 >
+                  {showMissingInfo && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        top: 4,
+                        right: 4,
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        background: '#f5222d',
+                        zIndex: 1,
+                      }}
+                    />
+                  )}
                   <span
                     style={{
                       fontSize: 13,
@@ -328,6 +356,15 @@ export default function RegionMapView({
           <div style={{ width: 20, height: 20, borderRadius: 2, background: '#e8e8e8', border: '4px solid #fa8c16' }} />
           <Typography.Text style={{ fontSize: 12 }}>Маловероятно</Typography.Text>
         </div>
+        {showDifferencesOnly && (
+          <>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>|</Typography.Text>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#f5222d', display: 'inline-block' }} />
+              <Typography.Text style={{ fontSize: 12 }}>Отсутствует в части ФО (см. подсказку)</Typography.Text>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

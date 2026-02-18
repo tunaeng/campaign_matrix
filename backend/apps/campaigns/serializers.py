@@ -113,7 +113,7 @@ class CampaignListSerializer(serializers.ModelSerializer):
         source="get_status_display", read_only=True
     )
     federal_operator_name = serializers.CharField(
-        source="federal_operator.name", read_only=True, default=None
+        source="federal_operator.display_name", read_only=True, default=None
     )
     created_by_name = serializers.SerializerMethodField()
     total_demand = serializers.IntegerField(read_only=True)
@@ -148,7 +148,7 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
         source="get_status_display", read_only=True
     )
     federal_operator_name = serializers.CharField(
-        source="federal_operator.name", read_only=True, default=None
+        source="federal_operator.display_name", read_only=True, default=None
     )
     created_by_name = serializers.SerializerMethodField()
     queues = CampaignQueueSerializer(many=True, read_only=True)

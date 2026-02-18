@@ -50,6 +50,12 @@ class Profession(models.Model):
 
 
 class ProfessionDemandStatus(models.Model):
+    federal_operator = models.ForeignKey(
+        "FederalOperator",
+        on_delete=models.CASCADE,
+        related_name="demand_statuses",
+        verbose_name="Федеральный оператор",
+    )
     profession = models.ForeignKey(
         Profession,
         on_delete=models.CASCADE,
@@ -65,16 +71,90 @@ class ProfessionDemandStatus(models.Model):
     is_demanded = models.BooleanField(
         default=False, verbose_name="Востребована"
     )
-    year = models.IntegerField(default=2026, verbose_name="Год")
+    year = models.IntegerField(default=2026, verbose_name="Год", db_index=True)
 
     class Meta:
         verbose_name = "Востребованность профессии"
         verbose_name_plural = "Востребованность профессий"
-        unique_together = ["profession", "region", "year"]
+        unique_together = ["federal_operator", "profession", "region", "year"]
+
+    def save(self, *args, **kwargs):
+        is_create = self.pk is None
+        previous_is_demanded = None
+        if not is_create:
+            previous_is_demanded = (
+                ProfessionDemandStatus.objects.filter(pk=self.pk)
+                .values_list("is_demanded", flat=True)
+                .first()
+            )
+
+        super().save(*args, **kwargs)
+
+        if is_create or previous_is_demanded != self.is_demanded:
+            ProfessionDemandStatusHistory.objects.create(
+                demand_status=self,
+                federal_operator=self.federal_operator,
+                profession=self.profession,
+                region=self.region,
+                year=self.year,
+                previous_is_demanded=previous_is_demanded,
+                new_is_demanded=self.is_demanded,
+            )
 
     def __str__(self):
         status = "да" if self.is_demanded else "нет"
         return f"{self.profession.name} — {self.region.name}: {status}"
+
+
+class ProfessionDemandStatusHistory(models.Model):
+    demand_status = models.ForeignKey(
+        ProfessionDemandStatus,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="history_entries",
+        verbose_name="Запись востребованности",
+    )
+    federal_operator = models.ForeignKey(
+        "FederalOperator",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="demand_history_entries",
+        verbose_name="Федеральный оператор",
+    )
+    profession = models.ForeignKey(
+        Profession,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="demand_history_entries",
+        verbose_name="Профессия",
+    )
+    region = models.ForeignKey(
+        Region,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="demand_history_entries",
+        verbose_name="Регион",
+    )
+    year = models.IntegerField(default=2026, verbose_name="Год", db_index=True)
+    previous_is_demanded = models.BooleanField(
+        null=True, blank=True, verbose_name="Было востребовано"
+    )
+    new_is_demanded = models.BooleanField(verbose_name="Стало востребовано")
+    changed_at = models.DateTimeField(auto_now_add=True, verbose_name="Изменено")
+
+    class Meta:
+        verbose_name = "История востребованности"
+        verbose_name_plural = "История востребованности"
+        ordering = ["-changed_at"]
+
+    def __str__(self):
+        prev = "—" if self.previous_is_demanded is None else ("да" if self.previous_is_demanded else "нет")
+        new = "да" if self.new_is_demanded else "нет"
+        return f"{self.profession} / {self.region}: {prev} -> {new}"
 
 
 class ProfessionApprovalStatus(models.Model):
@@ -98,7 +178,7 @@ class ProfessionApprovalStatus(models.Model):
         related_name="approval_statuses",
         verbose_name="Регион",
     )
-    year = models.IntegerField(default=2026, verbose_name="Год")
+    year = models.IntegerField(default=2026, verbose_name="Год", db_index=True)
     approval_status = models.CharField(
         max_length=30,
         choices=ApprovalStatus.choices,
@@ -146,7 +226,9 @@ class Program(models.Model):
 
 class FederalOperator(models.Model):
     name = models.CharField(max_length=300, verbose_name="Наименование")
-    code = models.CharField(max_length=50, unique=True, verbose_name="Код")
+    short_name = models.CharField(
+        max_length=150, blank=True, verbose_name="Сокращённое название"
+    )
     description = models.TextField(blank=True, verbose_name="Описание")
 
     class Meta:
@@ -154,8 +236,12 @@ class FederalOperator(models.Model):
         verbose_name_plural = "Федеральные операторы"
         ordering = ["name"]
 
+    @property
+    def display_name(self):
+        return (self.short_name or self.name).strip() or self.name
+
     def __str__(self):
-        return self.name
+        return self.display_name
 
 
 class Contract(models.Model):

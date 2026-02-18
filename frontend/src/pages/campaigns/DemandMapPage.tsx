@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Card, Cascader, Select, Spin, Typography } from 'antd';
+import { Card, Cascader, Select, Spin, Switch, Typography } from 'antd';
 import type { DefaultOptionType } from 'antd/es/cascader';
 import { useDemandMatrix, useFederalDistricts, useRegions } from '../../api/hooks';
 import RegionMapView from './RegionMapView';
@@ -14,6 +14,7 @@ export default function DemandMapPage() {
   const [year, setYear] = useState<number>(2026);
   const [selectedRegionIds, setSelectedRegionIds] = useState<number[]>([]);
   const [selectedProfessionId, setSelectedProfessionId] = useState<number | undefined>(undefined);
+  const [showDifferencesOnly, setShowDifferencesOnly] = useState<boolean>(false);
 
   const { data: districts } = useFederalDistricts();
   const { data: regionsData } = useRegions();
@@ -106,6 +107,8 @@ export default function DemandMapPage() {
               }
               allowClear
             />
+            <Switch checked={showDifferencesOnly} onChange={setShowDifferencesOnly} />
+            <Typography.Text style={{ fontSize: 13 }}>Показать различия по ФО</Typography.Text>
           </div>
           <RegionMapView
             matrix={matrix}
@@ -114,6 +117,7 @@ export default function DemandMapPage() {
             selectedProfessionId={selectedProfessionId}
             onSelectedProfessionChange={setSelectedProfessionId}
             showProfessionSelector={false}
+            showDifferencesOnly={showDifferencesOnly}
           />
         </Card>
       )}

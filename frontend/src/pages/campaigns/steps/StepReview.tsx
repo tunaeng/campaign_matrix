@@ -21,9 +21,10 @@ export default function StepReview({ data }: Props) {
   const selectedOrgs = (orgs?.results || []).filter((o) =>
     data.selectedOrganizations.includes(o.id)
   );
-  const operatorName = (operators?.results || []).find(
-    (op) => op.id === data.federal_operator
-  )?.name;
+  const operatorName = (() => {
+    const op = (operators?.results || []).find((o) => o.id === data.federal_operator);
+    return op ? (op.short_name?.trim() || op.name) : undefined;
+  })();
 
   return (
     <div>
