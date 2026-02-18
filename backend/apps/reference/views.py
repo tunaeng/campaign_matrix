@@ -238,12 +238,20 @@ class DemandMatrixImportView(APIView):
 
         created_professions = 0
         updated_professions = 0
-        created_statuses = 0
-        updated_statuses = 0
         skipped_rows = 0
         errors = []
 
-        for row_idx, row in enumerate(rows[2:], start=3):  # skip header + totals row
+        existing = {
+            (s.profession_id, s.region_id): s
+            for s in ProfessionDemandStatus.objects.filter(
+                federal_operator=federal_operator, year=default_year,
+            ).only("id", "profession_id", "region_id", "is_demanded")
+        }
+
+        to_create = []
+        to_update = []
+
+        for row_idx, row in enumerate(rows[2:], start=3):
             if not row or len(row) < 2:
                 skipped_rows += 1
                 continue
@@ -277,25 +285,33 @@ class DemandMatrixImportView(APIView):
                 for col_idx, region in region_columns:
                     cell_val = row[col_idx] if col_idx < len(row) else ""
                     is_demanded = self._to_bool(cell_val)
-                    _, created = ProfessionDemandStatus.objects.update_or_create(
-                        federal_operator=federal_operator,
-                        profession=profession,
-                        region=region,
-                        year=default_year,
-                        defaults={"is_demanded": is_demanded},
-                    )
-                    if created:
-                        created_statuses += 1
-                    else:
-                        updated_statuses += 1
+                    key = (profession.id, region.id)
+                    obj = existing.get(key)
+                    if obj is None:
+                        to_create.append(ProfessionDemandStatus(
+                            federal_operator=federal_operator,
+                            profession=profession,
+                            region=region,
+                            year=default_year,
+                            is_demanded=is_demanded,
+                        ))
+                    elif obj.is_demanded != is_demanded:
+                        obj.is_demanded = is_demanded
+                        to_update.append(obj)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"Row {row_idx}: {exc}")
+
+        BATCH = 1000
+        for i in range(0, len(to_create), BATCH):
+            ProfessionDemandStatus.objects.bulk_create(to_create[i:i + BATCH])
+        for i in range(0, len(to_update), BATCH):
+            ProfessionDemandStatus.objects.bulk_update(to_update[i:i + BATCH], ["is_demanded"])
 
         return {
             "created_professions": created_professions,
             "updated_professions": updated_professions,
-            "created_statuses": created_statuses,
-            "updated_statuses": updated_statuses,
+            "created_statuses": len(to_create),
+            "updated_statuses": len(to_update),
             "skipped_rows": skipped_rows,
             "errors_count": len(errors),
             "errors": errors[:20],
@@ -339,10 +355,18 @@ class DemandMatrixImportView(APIView):
 
         created_professions = 0
         updated_professions = 0
-        created_statuses = 0
-        updated_statuses = 0
         skipped_rows = 0
         errors = []
+
+        existing = {
+            (s.federal_operator_id, s.profession_id, s.region_id, s.year): s
+            for s in ProfessionDemandStatus.objects.filter(
+                federal_operator=federal_operator,
+            ).only("id", "federal_operator_id", "profession_id", "region_id", "year", "is_demanded")
+        }
+
+        to_create = []
+        to_update = []
 
         for row_idx, row in enumerate(rows[1:], start=2):
             try:
@@ -398,25 +422,33 @@ class DemandMatrixImportView(APIView):
                 if was_updated:
                     updated_professions += 1
 
-                _, created = ProfessionDemandStatus.objects.update_or_create(
-                    federal_operator=federal_operator,
-                    profession=profession,
-                    region=region,
-                    year=year,
-                    defaults={"is_demanded": is_demanded},
-                )
-                if created:
-                    created_statuses += 1
-                else:
-                    updated_statuses += 1
+                key = (federal_operator.id, profession.id, region.id, year)
+                obj = existing.get(key)
+                if obj is None:
+                    to_create.append(ProfessionDemandStatus(
+                        federal_operator=federal_operator,
+                        profession=profession,
+                        region=region,
+                        year=year,
+                        is_demanded=is_demanded,
+                    ))
+                elif obj.is_demanded != is_demanded:
+                    obj.is_demanded = is_demanded
+                    to_update.append(obj)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"Row {row_idx}: {exc}")
+
+        BATCH = 1000
+        for i in range(0, len(to_create), BATCH):
+            ProfessionDemandStatus.objects.bulk_create(to_create[i:i + BATCH])
+        for i in range(0, len(to_update), BATCH):
+            ProfessionDemandStatus.objects.bulk_update(to_update[i:i + BATCH], ["is_demanded"])
 
         return {
             "created_professions": created_professions,
             "updated_professions": updated_professions,
-            "created_statuses": created_statuses,
-            "updated_statuses": updated_statuses,
+            "created_statuses": len(to_create),
+            "updated_statuses": len(to_update),
             "skipped_rows": skipped_rows,
             "errors_count": len(errors),
             "errors": errors[:20],
