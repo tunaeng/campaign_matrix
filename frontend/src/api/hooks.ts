@@ -111,6 +111,33 @@ export function useImportDemandMatrix() {
   });
 }
 
+export function useImportDemandMatrixPreview() {
+  return useMutation<import('../types').ImportPreviewResult, unknown, FormData>({
+    mutationFn: (data: FormData) =>
+      client
+        .post('/demand-matrix/import/preview/', data, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+        .then(r => r.data),
+  });
+}
+
+export function useImportDemandMatrixApply() {
+  const qc = useQueryClient();
+  return useMutation<import('../types').ImportApplyResult, unknown, FormData>({
+    mutationFn: (data: FormData) =>
+      client
+        .post('/demand-matrix/import/apply/', data, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+        .then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['demand-matrix'] });
+      qc.invalidateQueries({ queryKey: ['professions'] });
+    },
+  });
+}
+
 // Campaigns
 export function useCampaigns(params?: Record<string, any>) {
   return useQuery<PaginatedResponse<Campaign>>({

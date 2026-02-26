@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 from typing import List
 
 from rest_framework import viewsets, generics, permissions, status
@@ -14,7 +15,7 @@ from openpyxl import load_workbook
 from .models import (
     FederalDistrict, Region, Profession, ProfessionDemandStatus,
     ProfessionApprovalStatus, Program, FederalOperator, Contract,
-    ContractProgram, Quota,
+    ContractProgram, Quota, DemandImport, DemandImportSnapshot,
 )
 from .serializers import (
     FederalDistrictSerializer, RegionSerializer, ProfessionSerializer,
@@ -147,6 +148,38 @@ class DemandMatrixImportView(APIView):
         if value is None:
             return ""
         return str(value).strip()
+
+    @staticmethod
+    def _normalize(value):
+        if value is None:
+            return ""
+        return str(value).strip().lower()
+
+    @staticmethod
+    def _save_import_snapshot(federal_operator, year, user):
+        demand_import = DemandImport.objects.create(
+            federal_operator=federal_operator,
+            year=year,
+            imported_by=user if user and user.is_authenticated else None,
+        )
+        current = ProfessionDemandStatus.objects.filter(
+            federal_operator=federal_operator, year=year,
+        ).values_list("profession_id", "region_id", "is_demanded")
+        snapshots = [
+            DemandImportSnapshot(
+                demand_import=demand_import,
+                profession_id=prof_id,
+                region_id=reg_id,
+                is_demanded=demanded,
+            )
+            for prof_id, reg_id, demanded in current
+        ]
+        BATCH = 1000
+        for i in range(0, len(snapshots), BATCH):
+            DemandImportSnapshot.objects.bulk_create(snapshots[i:i + BATCH])
+        demand_import.snapshot_count = len(snapshots)
+        demand_import.save(update_fields=["snapshot_count"])
+        return demand_import
 
     def _read_csv_rows(self, raw: bytes) -> List[List[str]]:
         decoded = None
@@ -535,7 +568,766 @@ class DemandMatrixImportView(APIView):
                 profession_by_number,
                 profession_by_name,
             )
+
+        self._save_import_snapshot(federal_operator, default_year, request.user)
+
         return Response(response, status=status.HTTP_200_OK)
+
+
+class DemandMatrixImportPreviewView(DemandMatrixImportView):
+    """
+    Dry-run import: returns invalid regions, new professions, and a
+    change summary without writing anything to the database.
+    """
+
+    def _preview_wide_matrix(
+        self, rows, region_by_name, profession_by_name,
+        federal_operator, default_year,
+    ):
+        if len(rows) < 2:
+            raise ValueError("Matrix file is too short.")
+
+        header = rows[0]
+        invalid_regions = []
+        invalid_regions_seen = set()
+        region_columns = []
+
+        for idx in range(2, len(header)):
+            raw = self._clean_cell(header[idx])
+            norm = self._normalize(raw)
+            if not norm:
+                continue
+            region = region_by_name.get(norm)
+            if region:
+                region_columns.append((idx, region))
+            elif norm not in invalid_regions_seen:
+                invalid_regions.append({"raw": raw, "normalized": norm})
+                invalid_regions_seen.add(norm)
+
+        new_professions = []
+        new_professions_seen = set()
+
+        existing = {
+            (s.profession_id, s.region_id): s
+            for s in ProfessionDemandStatus.objects.filter(
+                federal_operator=federal_operator, year=default_year,
+            ).only("id", "profession_id", "region_id", "is_demanded")
+        }
+
+        created_professions = 0
+        created_statuses = 0
+        updated_statuses = 0
+        skipped_rows = 0
+        errors = []
+
+        for row_idx, row in enumerate(rows[2:], start=3):
+            if not row or len(row) < 2:
+                skipped_rows += 1
+                continue
+
+            raw_number_str = self._clean_cell(row[0]) if len(row) > 0 else ""
+            profession_name = self._clean_cell(row[1]) if len(row) > 1 else ""
+            name_norm = self._normalize(profession_name)
+
+            if not profession_name or name_norm == "итого":
+                skipped_rows += 1
+                continue
+
+            profession_number = None
+            if raw_number_str:
+                try:
+                    profession_number = int(float(raw_number_str))
+                except Exception:
+                    pass
+
+            profession = profession_by_name.get(name_norm)
+
+            if profession is None:
+                if name_norm not in new_professions_seen:
+                    new_professions.append({
+                        "name": profession_name,
+                        "number": profession_number,
+                        "normalized": name_norm,
+                    })
+                    new_professions_seen.add(name_norm)
+                    created_professions += 1
+                created_statuses += len(region_columns)
+            else:
+                for col_idx, region in region_columns:
+                    cell_val = row[col_idx] if col_idx < len(row) else ""
+                    is_demanded = self._to_bool(cell_val)
+                    key = (profession.id, region.id)
+                    obj = existing.get(key)
+                    if obj is None:
+                        created_statuses += 1
+                    elif obj.is_demanded != is_demanded:
+                        updated_statuses += 1
+
+        return {
+            "invalid_regions": invalid_regions,
+            "new_professions": new_professions,
+            "preview": {
+                "created_professions": created_professions,
+                "created_statuses": created_statuses,
+                "updated_statuses": updated_statuses,
+                "skipped_rows": skipped_rows,
+                "errors": errors[:20],
+                "format": "wide_matrix",
+            },
+        }
+
+    def _preview_row_based(
+        self, rows, region_by_name, region_by_code, profession_by_name,
+        federal_operator, default_year,
+    ):
+        if not rows:
+            raise ValueError("CSV has no rows.")
+        header = rows[0]
+        header_map = {self._norm_header(h): idx for idx, h in enumerate(header) if h}
+
+        def pick(*aliases):
+            for alias in aliases:
+                if alias in header_map:
+                    return header_map[alias]
+            return None
+
+        profession_number_col = pick("profession_number", "number", "код_профессии")
+        profession_name_col = pick("profession_name", "name", "профессия")
+        region_col = pick("region_name", "region", "регион")
+        region_code_col = pick("region_code", "код_региона")
+        demanded_col = pick("is_demanded", "demanded", "востребована")
+        year_col = pick("year", "год")
+
+        if demanded_col is None or profession_name_col is None:
+            raise ValueError(
+                "Required columns: demanded + profession_name (or name/профессия)."
+            )
+
+        invalid_regions = []
+        invalid_regions_seen = set()
+        new_professions = []
+        new_professions_seen = set()
+
+        existing = {
+            (s.federal_operator_id, s.profession_id, s.region_id, s.year): s
+            for s in ProfessionDemandStatus.objects.filter(
+                federal_operator=federal_operator,
+            ).only(
+                "id", "federal_operator_id", "profession_id",
+                "region_id", "year", "is_demanded",
+            )
+        }
+
+        created_professions = 0
+        created_statuses = 0
+        updated_statuses = 0
+        skipped_rows = 0
+        errors = []
+
+        for row_idx, row in enumerate(rows[1:], start=2):
+            try:
+                if not row:
+                    skipped_rows += 1
+                    continue
+
+                profession_name = ""
+                if profession_name_col is not None and profession_name_col < len(row):
+                    profession_name = self._clean_cell(row[profession_name_col])
+                if not profession_name:
+                    skipped_rows += 1
+                    continue
+
+                name_norm = self._normalize(profession_name)
+
+                region = None
+                region_raw = ""
+                if region_col is not None and region_col < len(row):
+                    region_raw = self._clean_cell(row[region_col])
+                    region_norm = self._normalize(region_raw)
+                    if region_norm:
+                        region = region_by_name.get(region_norm)
+                if (
+                    region is None
+                    and region_code_col is not None
+                    and region_code_col < len(row)
+                ):
+                    code_raw = self._clean_cell(row[region_code_col])
+                    code_norm = self._normalize(code_raw)
+                    if code_norm:
+                        region = region_by_code.get(code_norm)
+                        if not region_raw:
+                            region_raw = code_raw
+
+                if region is None:
+                    if region_raw:
+                        norm = self._normalize(region_raw)
+                        if norm and norm not in invalid_regions_seen:
+                            invalid_regions.append({"raw": region_raw, "normalized": norm})
+                            invalid_regions_seen.add(norm)
+                    skipped_rows += 1
+                    continue
+
+                profession = profession_by_name.get(name_norm)
+
+                if profession is None:
+                    if name_norm not in new_professions_seen:
+                        prof_number = None
+                        if (
+                            profession_number_col is not None
+                            and profession_number_col < len(row)
+                        ):
+                            raw_num = self._clean_cell(row[profession_number_col])
+                            if raw_num:
+                                try:
+                                    prof_number = int(float(raw_num))
+                                except Exception:
+                                    pass
+                        new_professions.append({
+                            "name": profession_name,
+                            "number": prof_number,
+                            "normalized": name_norm,
+                        })
+                        new_professions_seen.add(name_norm)
+                        created_professions += 1
+                    created_statuses += 1
+                else:
+                    demanded_raw = row[demanded_col] if demanded_col < len(row) else ""
+                    is_demanded = self._to_bool(demanded_raw)
+                    year = default_year
+                    if year_col is not None and year_col < len(row):
+                        year_raw = self._clean_cell(row[year_col])
+                        if year_raw:
+                            year = int(float(year_raw))
+                    key = (federal_operator.id, profession.id, region.id, year)
+                    obj = existing.get(key)
+                    if obj is None:
+                        created_statuses += 1
+                    elif obj.is_demanded != is_demanded:
+                        updated_statuses += 1
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Row {row_idx}: {exc}")
+
+        return {
+            "invalid_regions": invalid_regions,
+            "new_professions": new_professions,
+            "preview": {
+                "created_professions": created_professions,
+                "created_statuses": created_statuses,
+                "updated_statuses": updated_statuses,
+                "skipped_rows": skipped_rows,
+                "errors": errors[:20],
+                "format": "row_based",
+            },
+        }
+
+    def post(self, request):
+        if not getattr(request.user, "is_admin_role", False):
+            return Response(
+                {"detail": "Only admin can import demand matrix."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response(
+                {"detail": "File is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw = upload.read()
+        try:
+            filename = (upload.name or "").lower()
+            if filename.endswith(".xlsx"):
+                rows = self._read_xlsx_rows(raw)
+            else:
+                rows = self._read_csv_rows(raw)
+        except Exception as exc:  # noqa: BLE001
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        federal_operator_id = (
+            request.data.get("federal_operator_id")
+            or request.data.get("federal_operator")
+        )
+        if not federal_operator_id:
+            return Response(
+                {"detail": "federal_operator_id is required for import."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            federal_operator = FederalOperator.objects.get(pk=int(federal_operator_id))
+        except (ValueError, FederalOperator.DoesNotExist):
+            return Response(
+                {"detail": "Invalid federal_operator_id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        default_year = int(
+            request.data.get("import_year")
+            or request.data.get("year")
+            or 2026
+        )
+
+        region_by_name = {self._normalize(r.name): r for r in Region.objects.all()}
+        region_by_code = {self._normalize(r.code): r for r in Region.objects.all()}
+        profession_by_name = {
+            self._normalize(p.name): p for p in Profession.objects.all()
+        }
+
+        first_row = rows[0] if rows else []
+        matched_regions = 0
+        for cell in first_row[2:]:
+            if self._normalize(cell) in region_by_name:
+                matched_regions += 1
+
+        try:
+            if matched_regions >= 5:
+                result = self._preview_wide_matrix(
+                    rows, region_by_name, profession_by_name,
+                    federal_operator, default_year,
+                )
+            else:
+                result = self._preview_row_based(
+                    rows, region_by_name, region_by_code, profession_by_name,
+                    federal_operator, default_year,
+                )
+        except Exception as exc:  # noqa: BLE001
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class DemandMatrixImportApplyView(DemandMatrixImportView):
+    """
+    Apply import with user-provided region and profession mappings.
+    Accepts the same file + federal_operator_id + import_year, plus
+    region_mapping and profession_mapping JSON fields.
+    """
+
+    def _resolve_mappings(self, region_mapping_raw, profession_mapping_raw):
+        """Pre-resolve mapping dicts into Region / Profession objects."""
+        region_mapping = {}
+        if region_mapping_raw:
+            region_ids = set()
+            for v in region_mapping_raw.values():
+                try:
+                    region_ids.add(int(v))
+                except (ValueError, TypeError):
+                    pass
+            regions_by_id = {r.id: r for r in Region.objects.filter(id__in=region_ids)}
+            for norm_key, rid in region_mapping_raw.items():
+                try:
+                    r = regions_by_id.get(int(rid))
+                    if r:
+                        region_mapping[self._normalize(norm_key)] = r
+                except (ValueError, TypeError):
+                    pass
+
+        profession_mapping = {}
+        if profession_mapping_raw:
+            prof_ids = set()
+            for v in profession_mapping_raw.values():
+                if str(v) != "new":
+                    try:
+                        prof_ids.add(int(v))
+                    except (ValueError, TypeError):
+                        pass
+            profs_by_id = {
+                p.id: p for p in Profession.objects.filter(id__in=prof_ids)
+            }
+            for norm_key, val in profession_mapping_raw.items():
+                key = self._normalize(norm_key)
+                if str(val) == "new":
+                    profession_mapping[key] = "new"
+                else:
+                    try:
+                        p = profs_by_id.get(int(val))
+                        if p:
+                            profession_mapping[key] = p
+                    except (ValueError, TypeError):
+                        pass
+
+        return region_mapping, profession_mapping
+
+    def _resolve_profession(
+        self, name_norm, profession_name, raw_number_str,
+        profession_by_name, profession_mapping, counters,
+    ):
+        """Resolve a profession from file data using name match or mapping."""
+        profession = profession_by_name.get(name_norm)
+        if profession is not None:
+            return profession
+
+        mapping_val = profession_mapping.get(name_norm)
+        if mapping_val is not None and mapping_val != "new":
+            profession_by_name[name_norm] = mapping_val
+            return mapping_val
+
+        profession_number = None
+        if raw_number_str:
+            try:
+                profession_number = int(float(raw_number_str))
+            except Exception:
+                pass
+        new_number = profession_number
+        if new_number is None:
+            max_number = (
+                Profession.objects.order_by("-number")
+                .values_list("number", flat=True)
+                .first()
+                or 0
+            )
+            new_number = max_number + 1
+        profession = Profession.objects.create(
+            number=new_number,
+            name=profession_name or f"Профессия {new_number}",
+        )
+        counters["created_professions"] += 1
+        profession_by_name[name_norm] = profession
+        return profession
+
+    def _apply_wide_matrix(
+        self, rows, default_year, federal_operator,
+        region_by_name, profession_by_name,
+        region_mapping, profession_mapping,
+    ):
+        if len(rows) < 2:
+            raise ValueError("Matrix file is too short.")
+
+        header = rows[0]
+        region_columns = []
+        for idx in range(2, len(header)):
+            raw = self._clean_cell(header[idx])
+            norm = self._normalize(raw)
+            if not norm:
+                continue
+            region = region_by_name.get(norm) or region_mapping.get(norm)
+            if region:
+                region_columns.append((idx, region))
+
+        if not region_columns:
+            raise ValueError("No region columns resolved in matrix header.")
+
+        counters = {"created_professions": 0}
+        skipped_rows = 0
+        errors = []
+
+        existing = {
+            (s.profession_id, s.region_id): s
+            for s in ProfessionDemandStatus.objects.filter(
+                federal_operator=federal_operator, year=default_year,
+            ).only("id", "profession_id", "region_id", "is_demanded")
+        }
+
+        to_create = []
+        to_update = []
+
+        for row_idx, row in enumerate(rows[2:], start=3):
+            if not row or len(row) < 2:
+                skipped_rows += 1
+                continue
+
+            raw_number_str = self._clean_cell(row[0]) if len(row) > 0 else ""
+            profession_name = self._clean_cell(row[1]) if len(row) > 1 else ""
+            name_norm = self._normalize(profession_name)
+
+            if not profession_name or name_norm == "итого":
+                skipped_rows += 1
+                continue
+
+            try:
+                profession = self._resolve_profession(
+                    name_norm, profession_name, raw_number_str,
+                    profession_by_name, profession_mapping, counters,
+                )
+
+                for col_idx, region in region_columns:
+                    cell_val = row[col_idx] if col_idx < len(row) else ""
+                    is_demanded = self._to_bool(cell_val)
+                    key = (profession.id, region.id)
+                    obj = existing.get(key)
+                    if obj is None:
+                        to_create.append(ProfessionDemandStatus(
+                            federal_operator=federal_operator,
+                            profession=profession,
+                            region=region,
+                            year=default_year,
+                            is_demanded=is_demanded,
+                        ))
+                    elif obj.is_demanded != is_demanded:
+                        obj.is_demanded = is_demanded
+                        to_update.append(obj)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Row {row_idx}: {exc}")
+
+        BATCH = 1000
+        for i in range(0, len(to_create), BATCH):
+            ProfessionDemandStatus.objects.bulk_create(to_create[i:i + BATCH])
+        for i in range(0, len(to_update), BATCH):
+            ProfessionDemandStatus.objects.bulk_update(
+                to_update[i:i + BATCH], ["is_demanded"],
+            )
+
+        return {
+            "created_professions": counters["created_professions"],
+            "created_statuses": len(to_create),
+            "updated_statuses": len(to_update),
+            "skipped_rows": skipped_rows,
+            "errors_count": len(errors),
+            "errors": errors[:20],
+            "format": "wide_matrix",
+        }
+
+    def _apply_row_based(
+        self, rows, default_year, federal_operator,
+        region_by_name, region_by_code, profession_by_name,
+        region_mapping, profession_mapping,
+    ):
+        if not rows:
+            raise ValueError("CSV has no rows.")
+        header = rows[0]
+        header_map = {
+            self._norm_header(h): idx for idx, h in enumerate(header) if h
+        }
+
+        def pick(*aliases):
+            for alias in aliases:
+                if alias in header_map:
+                    return header_map[alias]
+            return None
+
+        profession_number_col = pick("profession_number", "number", "код_профессии")
+        profession_name_col = pick("profession_name", "name", "профессия")
+        region_col = pick("region_name", "region", "регион")
+        region_code_col = pick("region_code", "код_региона")
+        demanded_col = pick("is_demanded", "demanded", "востребована")
+        year_col = pick("year", "год")
+
+        if demanded_col is None or profession_name_col is None:
+            raise ValueError("Required columns: demanded + profession_name.")
+
+        counters = {"created_professions": 0}
+        skipped_rows = 0
+        errors = []
+
+        existing = {
+            (s.federal_operator_id, s.profession_id, s.region_id, s.year): s
+            for s in ProfessionDemandStatus.objects.filter(
+                federal_operator=federal_operator,
+            ).only(
+                "id", "federal_operator_id", "profession_id",
+                "region_id", "year", "is_demanded",
+            )
+        }
+
+        to_create = []
+        to_update = []
+
+        for row_idx, row in enumerate(rows[1:], start=2):
+            try:
+                if not row:
+                    skipped_rows += 1
+                    continue
+
+                profession_name = ""
+                if profession_name_col is not None and profession_name_col < len(row):
+                    profession_name = self._clean_cell(row[profession_name_col])
+                if not profession_name:
+                    skipped_rows += 1
+                    continue
+
+                name_norm = self._normalize(profession_name)
+
+                region = None
+                if region_col is not None and region_col < len(row):
+                    region_raw = self._clean_cell(row[region_col])
+                    region_norm = self._normalize(region_raw)
+                    if region_norm:
+                        region = (
+                            region_by_name.get(region_norm)
+                            or region_mapping.get(region_norm)
+                        )
+                if (
+                    region is None
+                    and region_code_col is not None
+                    and region_code_col < len(row)
+                ):
+                    code_raw = self._clean_cell(row[region_code_col])
+                    code_norm = self._normalize(code_raw)
+                    if code_norm:
+                        region = (
+                            region_by_code.get(code_norm)
+                            or region_mapping.get(code_norm)
+                        )
+                if region is None:
+                    skipped_rows += 1
+                    continue
+
+                raw_number_str = ""
+                if (
+                    profession_number_col is not None
+                    and profession_number_col < len(row)
+                ):
+                    raw_number_str = self._clean_cell(row[profession_number_col])
+
+                profession = self._resolve_profession(
+                    name_norm, profession_name, raw_number_str,
+                    profession_by_name, profession_mapping, counters,
+                )
+
+                demanded_raw = row[demanded_col] if demanded_col < len(row) else ""
+                is_demanded = self._to_bool(demanded_raw)
+                year = default_year
+                if year_col is not None and year_col < len(row):
+                    year_raw = self._clean_cell(row[year_col])
+                    if year_raw:
+                        year = int(float(year_raw))
+
+                key = (federal_operator.id, profession.id, region.id, year)
+                obj = existing.get(key)
+                if obj is None:
+                    to_create.append(ProfessionDemandStatus(
+                        federal_operator=federal_operator,
+                        profession=profession,
+                        region=region,
+                        year=year,
+                        is_demanded=is_demanded,
+                    ))
+                elif obj.is_demanded != is_demanded:
+                    obj.is_demanded = is_demanded
+                    to_update.append(obj)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Row {row_idx}: {exc}")
+
+        BATCH = 1000
+        for i in range(0, len(to_create), BATCH):
+            ProfessionDemandStatus.objects.bulk_create(to_create[i:i + BATCH])
+        for i in range(0, len(to_update), BATCH):
+            ProfessionDemandStatus.objects.bulk_update(
+                to_update[i:i + BATCH], ["is_demanded"],
+            )
+
+        return {
+            "created_professions": counters["created_professions"],
+            "created_statuses": len(to_create),
+            "updated_statuses": len(to_update),
+            "skipped_rows": skipped_rows,
+            "errors_count": len(errors),
+            "errors": errors[:20],
+            "format": "row_based",
+        }
+
+    def post(self, request):
+        if not getattr(request.user, "is_admin_role", False):
+            return Response(
+                {"detail": "Only admin can import demand matrix."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response(
+                {"detail": "File is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw = upload.read()
+        try:
+            filename = (upload.name or "").lower()
+            if filename.endswith(".xlsx"):
+                rows = self._read_xlsx_rows(raw)
+            else:
+                rows = self._read_csv_rows(raw)
+        except Exception as exc:  # noqa: BLE001
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        federal_operator_id = (
+            request.data.get("federal_operator_id")
+            or request.data.get("federal_operator")
+        )
+        if not federal_operator_id:
+            return Response(
+                {"detail": "federal_operator_id is required for import."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            federal_operator = FederalOperator.objects.get(pk=int(federal_operator_id))
+        except (ValueError, FederalOperator.DoesNotExist):
+            return Response(
+                {"detail": "Invalid federal_operator_id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        default_year = int(
+            request.data.get("import_year")
+            or request.data.get("year")
+            or 2026
+        )
+
+        region_mapping_raw = request.data.get("region_mapping", "{}")
+        profession_mapping_raw = request.data.get("profession_mapping", "{}")
+        try:
+            rm = (
+                json.loads(region_mapping_raw)
+                if isinstance(region_mapping_raw, str)
+                else (region_mapping_raw or {})
+            )
+            pm = (
+                json.loads(profession_mapping_raw)
+                if isinstance(profession_mapping_raw, str)
+                else (profession_mapping_raw or {})
+            )
+        except json.JSONDecodeError:
+            return Response(
+                {"detail": "Invalid JSON in region_mapping or profession_mapping."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        region_mapping, profession_mapping = self._resolve_mappings(rm, pm)
+
+        region_by_name = {self._normalize(r.name): r for r in Region.objects.all()}
+        region_by_code = {self._normalize(r.code): r for r in Region.objects.all()}
+        profession_by_name = {
+            self._normalize(p.name): p for p in Profession.objects.all()
+        }
+
+        first_row = rows[0] if rows else []
+        matched_regions = 0
+        for cell in first_row[2:]:
+            norm = self._normalize(cell)
+            if norm in region_by_name or norm in region_mapping:
+                matched_regions += 1
+
+        try:
+            if matched_regions >= 5:
+                result = self._apply_wide_matrix(
+                    rows, default_year, federal_operator,
+                    region_by_name, profession_by_name,
+                    region_mapping, profession_mapping,
+                )
+            else:
+                result = self._apply_row_based(
+                    rows, default_year, federal_operator,
+                    region_by_name, region_by_code, profession_by_name,
+                    region_mapping, profession_mapping,
+                )
+        except Exception as exc:  # noqa: BLE001
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        self._save_import_snapshot(federal_operator, default_year, request.user)
+
+        return Response(result, status=status.HTTP_200_OK)
 
 
 class DemandMatrixView(generics.ListAPIView):

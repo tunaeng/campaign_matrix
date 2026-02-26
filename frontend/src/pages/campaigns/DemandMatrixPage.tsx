@@ -15,14 +15,11 @@ import {
   Segmented,
   Cascader,
   Button,
-  Upload,
-  message,
   Tooltip,
 } from 'antd';
-import { useDemandMatrix, useFederalDistricts, useRegions, useImportDemandMatrix, useFederalOperators } from '../../api/hooks';
+import { useDemandMatrix, useFederalDistricts, useRegions } from '../../api/hooks';
 import type { DefaultOptionType } from 'antd/es/cascader';
-import type { UploadProps } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import ImportWizard from './ImportWizard';
 
 type ViewMode = 'professions-x-regions' | 'regions-x-professions';
 
@@ -99,17 +96,12 @@ export default function DemandMatrixPage() {
   const [selectedRegionIds, setSelectedRegionIds] = useState<number[]>([]);
   const [selectedApprovalStatuses, setSelectedApprovalStatuses] = useState<string[]>([]);
   const [year, setYear] = useState<number>(2026);
-  const [importYear, setImportYear] = useState<number>(2026);
-  const [importOperatorId, setImportOperatorId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('professions-x-regions');
   const [showDifferencesOnly, setShowDifferencesOnly] = useState<boolean>(false);
   const [deferMatrixRender, setDeferMatrixRender] = useState(false);
 
   const { data: districts } = useFederalDistricts();
   const { data: regionsData } = useRegions();
-  const { data: operatorsData } = useFederalOperators();
-  const importDemandMatrix = useImportDemandMatrix();
-
   const { data: matrix, isLoading } = useDemandMatrix({
     demanded_only: demandedOnly || undefined,
     region_ids: selectedRegionIds.length > 0 ? selectedRegionIds.join(',') : undefined,
@@ -204,32 +196,6 @@ export default function DemandMatrixPage() {
       }
     });
     setSelectedRegionIds(regionIds);
-  };
-
-  const uploadProps: UploadProps = {
-    accept: '.csv,.xlsx',
-    showUploadList: false,
-    customRequest: async ({ file, onError, onSuccess }) => {
-      if (!importOperatorId) {
-        message.error('Выберите федерального оператора для импорта');
-        return;
-      }
-      try {
-        const formData = new FormData();
-        formData.append('file', file as File);
-        formData.append('import_year', String(importYear));
-        formData.append('federal_operator_id', String(importOperatorId));
-        const result = await importDemandMatrix.mutateAsync(formData);
-        message.success(
-          `Импорт (${result.format || 'csv'}) завершён: +профессии ${result.created_professions}, обновлено связей ${result.updated_statuses}, создано связей ${result.created_statuses}`
-        );
-        onSuccess?.(result as any);
-      } catch (err: any) {
-        const detail = err?.response?.data?.detail || 'Ошибка импорта';
-        message.error(detail);
-        onError?.(err);
-      }
-    },
   };
 
   const totalDemanded = useMemo(() => {
@@ -644,50 +610,16 @@ export default function DemandMatrixPage() {
           {/* Импорт справа */}
           <div
             style={{
-              width: 320,
-              maxWidth: '100%',
-              flex: '0 0 320px',
+              minWidth: 320,
+              maxWidth: 520,
+              flex: '0 0 auto',
               border: '1px dashed #d9d9d9',
               borderRadius: 8,
               padding: 10,
               background: '#fafafa',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 6,
             }}
           >
-            <Typography.Text strong>Импорт востребованности</Typography.Text>
-            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-              Оператор + год + файл CSV/XLSX
-            </Typography.Text>
-            <Select
-              placeholder="ФО для импорта"
-              value={importOperatorId}
-              onChange={setImportOperatorId}
-              options={(operatorsData?.results || []).map((op) => ({
-                value: op.id,
-                label: op.short_name?.trim() || op.name,
-              }))}
-              allowClear
-            />
-            <Select
-              placeholder="Год импорта"
-              value={importYear}
-              onChange={setImportYear}
-              options={YEAR_OPTIONS}
-              style={{ width: 130 }}
-            />
-            <Upload {...uploadProps}>
-              <Button
-                icon={<UploadOutlined />}
-                loading={importDemandMatrix.isPending}
-                type="default"
-                disabled={!importOperatorId}
-                block
-              >
-                Импорт востребованности
-              </Button>
-            </Upload>
+            <ImportWizard />
           </div>
         </div>
       </Card>

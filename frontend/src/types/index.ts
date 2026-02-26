@@ -185,6 +185,42 @@ export interface DemandMatrix {
   federal_operators?: { id: number; short_name: string }[];
 }
 
+export interface ImportPreviewInvalidRegion {
+  raw: string;
+  normalized: string;
+}
+
+export interface ImportPreviewNewProfession {
+  name: string;
+  number: number | null;
+  normalized: string;
+}
+
+export interface ImportPreviewSummary {
+  created_professions: number;
+  created_statuses: number;
+  updated_statuses: number;
+  skipped_rows: number;
+  errors: string[];
+  format: string;
+}
+
+export interface ImportPreviewResult {
+  invalid_regions: ImportPreviewInvalidRegion[];
+  new_professions: ImportPreviewNewProfession[];
+  preview: ImportPreviewSummary;
+}
+
+export interface ImportApplyResult {
+  created_professions: number;
+  created_statuses: number;
+  updated_statuses: number;
+  skipped_rows: number;
+  errors_count: number;
+  errors: string[];
+  format: string;
+}
+
 export interface PaginatedResponse<T> {
   count: number;
   next: string | null;
