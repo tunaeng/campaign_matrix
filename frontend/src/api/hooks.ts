@@ -8,7 +8,7 @@ import type {
 
 // Auth
 export function useMe() {
-  return useQuery({
+  return useQuery<import('../types').User>({
     queryKey: ['me'],
     queryFn: () => client.get('/auth/me/').then(r => r.data),
     retry: false,
