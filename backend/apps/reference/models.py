@@ -157,6 +157,70 @@ class ProfessionDemandStatusHistory(models.Model):
         return f"{self.profession} / {self.region}: {prev} -> {new}"
 
 
+class DemandImport(models.Model):
+    federal_operator = models.ForeignKey(
+        "FederalOperator",
+        on_delete=models.CASCADE,
+        related_name="demand_imports",
+        verbose_name="Федеральный оператор",
+    )
+    year = models.IntegerField(verbose_name="Год")
+    imported_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата импорта")
+    imported_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="demand_imports",
+        verbose_name="Импортировал",
+    )
+    snapshot_count = models.PositiveIntegerField(
+        default=0, verbose_name="Записей в снимке"
+    )
+
+    class Meta:
+        verbose_name = "Импорт востребованности"
+        verbose_name_plural = "Импорты востребованности"
+        ordering = ["-imported_at"]
+
+    def __str__(self):
+        return (
+            f"Импорт {self.federal_operator} / {self.year} "
+            f"от {self.imported_at:%d.%m.%Y %H:%M}"
+        )
+
+
+class DemandImportSnapshot(models.Model):
+    demand_import = models.ForeignKey(
+        DemandImport,
+        on_delete=models.CASCADE,
+        related_name="snapshots",
+        verbose_name="Импорт",
+    )
+    profession = models.ForeignKey(
+        Profession,
+        on_delete=models.CASCADE,
+        related_name="+",
+        verbose_name="Профессия",
+    )
+    region = models.ForeignKey(
+        Region,
+        on_delete=models.CASCADE,
+        related_name="+",
+        verbose_name="Регион",
+    )
+    is_demanded = models.BooleanField(verbose_name="Востребована")
+
+    class Meta:
+        verbose_name = "Снимок востребованности"
+        verbose_name_plural = "Снимки востребованности"
+        unique_together = ["demand_import", "profession", "region"]
+
+    def __str__(self):
+        status = "да" if self.is_demanded else "нет"
+        return f"{self.profession} / {self.region}: {status}"
+
+
 class ProfessionApprovalStatus(models.Model):
     class ApprovalStatus(models.TextChoices):
         PENDING = "pending", "Ожидает"

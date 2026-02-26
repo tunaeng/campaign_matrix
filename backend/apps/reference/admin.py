@@ -1,8 +1,8 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 from .models import (
     FederalDistrict, Region, Profession, ProfessionDemandStatus,
     ProfessionDemandStatusHistory, ProfessionApprovalStatus, Program, FederalOperator, Contract,
-    ContractProgram, Quota,
+    ContractProgram, Quota, DemandImport, DemandImportSnapshot,
 )
 
 
@@ -103,6 +103,124 @@ class ContractAdmin(admin.ModelAdmin):
 class ContractProgramAdmin(admin.ModelAdmin):
     list_display = ["contract", "program", "status"]
     list_filter = ["status"]
+
+
+class DemandImportSnapshotInline(admin.TabularInline):
+    model = DemandImportSnapshot
+    extra = 0
+    can_delete = False
+    fields = ["profession", "region", "is_demanded"]
+    readonly_fields = fields
+    show_change_link = False
+    max_num = 0
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.action(description="Откатить до выбранной версии импорта")
+def rollback_to_import(modeladmin, request, queryset):
+    if queryset.count() != 1:
+        modeladmin.message_user(
+            request,
+            "Выберите ровно один импорт для отката.",
+            messages.ERROR,
+        )
+        return
+
+    demand_import = queryset.first()
+    snapshot_qs = DemandImportSnapshot.objects.filter(
+        demand_import=demand_import,
+    ).values_list("profession_id", "region_id", "is_demanded")
+
+    snapshot_map = {}
+    for prof_id, reg_id, demanded in snapshot_qs:
+        snapshot_map[(prof_id, reg_id)] = demanded
+
+    if not snapshot_map:
+        modeladmin.message_user(
+            request,
+            "Снимок пуст — откат невозможен.",
+            messages.ERROR,
+        )
+        return
+
+    fo = demand_import.federal_operator
+    year = demand_import.year
+
+    existing = {
+        (s.profession_id, s.region_id): s
+        for s in ProfessionDemandStatus.objects.filter(
+            federal_operator=fo, year=year,
+        ).only("id", "profession_id", "region_id", "is_demanded")
+    }
+
+    to_update = []
+    to_create = []
+
+    for (prof_id, reg_id), demanded in snapshot_map.items():
+        obj = existing.get((prof_id, reg_id))
+        if obj is None:
+            to_create.append(ProfessionDemandStatus(
+                federal_operator=fo,
+                profession_id=prof_id,
+                region_id=reg_id,
+                year=year,
+                is_demanded=demanded,
+            ))
+        elif obj.is_demanded != demanded:
+            obj.is_demanded = demanded
+            to_update.append(obj)
+
+    keys_to_delete = set(existing.keys()) - set(snapshot_map.keys())
+
+    BATCH = 1000
+    for i in range(0, len(to_create), BATCH):
+        ProfessionDemandStatus.objects.bulk_create(to_create[i:i + BATCH])
+    for i in range(0, len(to_update), BATCH):
+        ProfessionDemandStatus.objects.bulk_update(
+            to_update[i:i + BATCH], ["is_demanded"],
+        )
+
+    if keys_to_delete:
+        from django.db.models import Q
+        delete_q = Q()
+        for prof_id, reg_id in keys_to_delete:
+            delete_q |= Q(profession_id=prof_id, region_id=reg_id)
+        ProfessionDemandStatus.objects.filter(
+            delete_q, federal_operator=fo, year=year,
+        ).delete()
+
+    modeladmin.message_user(
+        request,
+        f"Откат выполнен: создано {len(to_create)}, "
+        f"обновлено {len(to_update)}, удалено {len(keys_to_delete)}.",
+        messages.SUCCESS,
+    )
+
+
+@admin.register(DemandImport)
+class DemandImportAdmin(admin.ModelAdmin):
+    list_display = [
+        "imported_at", "federal_operator", "year",
+        "imported_by", "snapshot_count",
+    ]
+    list_filter = ["year", "federal_operator"]
+    readonly_fields = [
+        "federal_operator", "year", "imported_at",
+        "imported_by", "snapshot_count",
+    ]
+    inlines = [DemandImportSnapshotInline]
+    actions = [rollback_to_import]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return True
 
 
 @admin.register(Quota)
