@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Steps, Button, Space, Typography, message } from 'antd';
+import { Card, Steps, Button, Space, Typography, App } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { useCreateCampaign } from '../../api/hooks';
 import StepBasicInfo from './steps/StepBasicInfo';
@@ -46,6 +46,7 @@ const steps = [
 ];
 
 export default function CampaignCreatePage() {
+  const { message } = App.useApp();
   const navigate = useNavigate();
   const createCampaign = useCreateCampaign();
   const [currentStep, setCurrentStep] = useState(0);

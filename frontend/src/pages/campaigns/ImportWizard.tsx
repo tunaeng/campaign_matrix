@@ -9,8 +9,8 @@ import {
   Space,
   Alert,
   Descriptions,
-  message,
   Upload,
+  App,
 } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
@@ -44,6 +44,7 @@ function stepIndex(step: WizardStep) {
 }
 
 export default function ImportWizard({ onDone }: { onDone?: () => void }) {
+  const { message } = App.useApp();
   const [step, setStep] = useState<WizardStep>('upload');
   const [file, setFile] = useState<File | null>(null);
   const [importYear, setImportYear] = useState<number>(2026);
@@ -290,8 +291,13 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
                     }
                     options={regionOptions}
                     showSearch
+                    optionFilterProp="label"
                     filterOption={(input, option) =>
-                      (option?.label as string || '').toLowerCase().includes(input.toLowerCase())
+                      regionOptions.some(
+                        (r) =>
+                          r.value === option?.value &&
+                          String(r.label).toLowerCase().includes(String(input).toLowerCase())
+                      )
                     }
                     allowClear
                     onClear={() =>

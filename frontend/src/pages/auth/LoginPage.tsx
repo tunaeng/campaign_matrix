@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Form, Input, Button, Typography, message, Space } from 'antd';
+import { Card, Form, Input, Button, Typography, Space, App } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useLogin } from '../../api/hooks';
 
 export default function LoginPage() {
+  const { message } = App.useApp();
   const navigate = useNavigate();
   const login = useLogin();
   const [loading, setLoading] = useState(false);

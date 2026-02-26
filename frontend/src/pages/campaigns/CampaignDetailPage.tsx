@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Descriptions, Tag, Tabs, Table, Spin, Typography,
-  Button, Space, Statistic, Row, Col, Select, message,
+  Button, Space, Statistic, Row, Col, Select, App,
 } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { useCampaign, useUpdateCampaign } from '../../api/hooks';
@@ -24,6 +24,7 @@ const orgStatusColors: Record<string, string> = {
 };
 
 export default function CampaignDetailPage() {
+  const { message } = App.useApp();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: campaign, isLoading } = useCampaign(id!);
