@@ -16,8 +16,10 @@ import {
   Cascader,
   Button,
   Tooltip,
+  Modal,
 } from 'antd';
-import { useDemandMatrix, useFederalDistricts, useRegions } from '../../api/hooks';
+import { UploadOutlined } from '@ant-design/icons';
+import { useDemandMatrix, useFederalDistricts, useRegions, useMe } from '../../api/hooks';
 import type { DefaultOptionType } from 'antd/es/cascader';
 import ImportWizard from './ImportWizard';
 
@@ -99,7 +101,10 @@ export default function DemandMatrixPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('professions-x-regions');
   const [showDifferencesOnly, setShowDifferencesOnly] = useState<boolean>(false);
   const [deferMatrixRender, setDeferMatrixRender] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
 
+  const { data: me } = useMe();
+  const isAdmin = me?.role === 'admin';
   const { data: districts } = useFederalDistricts();
   const { data: regionsData } = useRegions();
   const { data: matrix, isLoading } = useDemandMatrix({
@@ -502,8 +507,7 @@ export default function DemandMatrixPage() {
       </div>
 
       <Card style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <div style={{ flex: '1 1 520px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {/* Строка 1: Поиск + Только с востребованностью */}
             <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               <Input
@@ -562,6 +566,12 @@ export default function DemandMatrixPage() {
                 style={{ minWidth: 300 }}
                 maxTagCount="responsive"
                 showCheckedStrategy="SHOW_CHILD"
+                showSearch={{
+                  filter: (inputValue, path) =>
+                    path.some((opt) =>
+                      String(opt?.label ?? '').toLowerCase().includes(String(inputValue).toLowerCase())
+                    ),
+                }}
                 allowClear
               />
               <Select
@@ -582,45 +592,43 @@ export default function DemandMatrixPage() {
                   <Statistic title="Год" value={matrixForRender.year} formatter={(v) => String(v)} valueStyle={{ fontSize: 18 }} />
                 </Col>
                 <Col>
-                  <Statistic
-                    title="Профессий"
-                    value={visibleProfessions.length}
-                    valueStyle={{ fontSize: 18 }}
-                  />
+                  <Statistic title="Профессий" value={visibleProfessions.length} valueStyle={{ fontSize: 18 }} />
                 </Col>
                 <Col>
-                  <Statistic
-                    title="Регионов"
-                    value={visibleRegions.length}
-                    valueStyle={{ fontSize: 18 }}
-                  />
+                  <Statistic title="Регионов" value={visibleRegions.length} valueStyle={{ fontSize: 18 }} />
                 </Col>
                 <Col>
-                  <Statistic
-                    title="Всего востребовано"
-                    value={totalDemanded}
-                    suffix="связей"
-                    valueStyle={{ fontSize: 18 }}
-                  />
+                  <Statistic title="Всего востребовано" value={totalDemanded} suffix="связей" valueStyle={{ fontSize: 18 }} />
                 </Col>
+                {isAdmin && (
+                  <Col style={{ marginLeft: 'auto' }}>
+                    <Button icon={<UploadOutlined />} onClick={() => setImportModalOpen(true)}>
+                      Импорт
+                    </Button>
+                  </Col>
+                )}
               </Row>
             )}
-          </div>
+            {!matrixForRender && isAdmin && (
+              <div>
+                <Button icon={<UploadOutlined />} onClick={() => setImportModalOpen(true)}>
+                  Импорт
+                </Button>
+              </div>
+            )}
 
-          {/* Импорт справа */}
-          <div
-            style={{
-              minWidth: 320,
-              maxWidth: 520,
-              flex: '0 0 auto',
-              border: '1px dashed #d9d9d9',
-              borderRadius: 8,
-              padding: 10,
-              background: '#fafafa',
-            }}
-          >
-            <ImportWizard />
-          </div>
+          {isAdmin && (
+            <Modal
+              title="Импорт востребованности"
+              open={importModalOpen}
+              onCancel={() => setImportModalOpen(false)}
+              footer={null}
+              width={640}
+              destroyOnClose
+            >
+              <ImportWizard onDone={() => setImportModalOpen(false)} />
+            </Modal>
+          )}
         </div>
       </Card>
 
@@ -629,7 +637,7 @@ export default function DemandMatrixPage() {
           <Spin size="large" />
         </div>
       ) : viewMode === 'professions-x-regions' ? (
-        <Card bodyStyle={{ padding: 0, overflow: 'auto' }}>
+        <Card styles={{ body: { padding: 0, overflow: 'auto' } }}>
           <Table
             className="demand-matrix-table"
             dataSource={visibleProfessions}
@@ -646,7 +654,7 @@ export default function DemandMatrixPage() {
           />
         </Card>
       ) : (
-        <Card bodyStyle={{ padding: 0, overflow: 'auto' }}>
+        <Card styles={{ body: { padding: 0, overflow: 'auto' } }}>
           <Table
             className="demand-matrix-table"
             dataSource={regionRowsData}

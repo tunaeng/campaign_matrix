@@ -74,7 +74,7 @@ export default function DemandMapPage() {
           <Spin size="large" />
         </div>
       ) : (
-        <Card bodyStyle={{ padding: 16, overflow: 'auto' }}>
+        <Card styles={{ body: { padding: 16, overflow: 'auto' } }}>
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
             <Select
               placeholder="Год"
@@ -93,6 +93,12 @@ export default function DemandMapPage() {
               style={{ minWidth: 340 }}
               maxTagCount="responsive"
               showCheckedStrategy="SHOW_CHILD"
+              showSearch={{
+                filter: (inputValue, path) =>
+                  path.some((opt) =>
+                    String(opt?.label ?? '').toLowerCase().includes(String(inputValue).toLowerCase())
+                  ),
+              }}
               allowClear
             />
             <Select
