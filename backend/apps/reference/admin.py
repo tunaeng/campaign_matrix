@@ -117,6 +117,10 @@ class DemandImportSnapshotInline(admin.TabularInline):
     def has_add_permission(self, request, obj=None):
         return False
 
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related("profession", "region")[:500]
+
 
 @admin.action(description="Откатить до выбранной версии импорта")
 def rollback_to_import(modeladmin, request, queryset):

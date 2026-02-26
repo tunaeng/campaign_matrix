@@ -52,7 +52,7 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
   const [previewResult, setPreviewResult] = useState<ImportPreviewResult | null>(null);
 
   const [regionMapping, setRegionMapping] = useState<Record<string, number>>({});
-  const [professionMapping, setProfessionMapping] = useState<Record<string, number | 'new'>>({});
+  const [professionMapping, setProfessionMapping] = useState<Record<string, number | 'new' | null>>({});
 
   const previewMutation = useImportDemandMatrixPreview();
   const applyMutation = useImportDemandMatrixApply();
@@ -75,6 +75,12 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
       label: `${p.number}. ${p.name}`,
     }));
   }, [professionsData]);
+
+  /** Для «Заменить на существующую» — только профессии, которых нет в файле */
+  const replaceProfessionOptions = useMemo(() => {
+    const idsInFile = new Set(previewResult?.existing_profession_ids_in_file ?? []);
+    return professionOptions.filter((opt) => !idsInFile.has(opt.value as number));
+  }, [professionOptions, previewResult?.existing_profession_ids_in_file]);
 
   const handleFilePreview = async (selectedFile: File) => {
     if (!operatorId) {
@@ -154,7 +160,10 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
     formData.append('import_year', String(importYear));
     formData.append('federal_operator_id', String(operatorId));
     formData.append('region_mapping', JSON.stringify(regionMapping));
-    formData.append('profession_mapping', JSON.stringify(professionMapping));
+    const mappingToSend = Object.fromEntries(
+      Object.entries(professionMapping).filter(([, v]) => v !== null && v !== undefined),
+    );
+    formData.append('profession_mapping', JSON.stringify(mappingToSend));
 
     try {
       const result = await applyMutation.mutateAsync(formData);
@@ -207,9 +216,10 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
 
   const professionsAllMapped = useMemo(() => {
     if (!previewResult) return true;
-    return previewResult.new_professions.every(
-      (p) => professionMapping[p.normalized] !== undefined,
-    );
+    return previewResult.new_professions.every((p) => {
+      const v = professionMapping[p.normalized];
+      return v === 'new' || typeof v === 'number';
+    });
   }, [previewResult, professionMapping]);
 
   return (
@@ -354,7 +364,12 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
                 key: 'action',
                 render: (_, record) => {
                   const currentVal = professionMapping[record.normalized];
-                  const mode = currentVal === 'new' ? 'new' : currentVal !== undefined ? 'replace' : undefined;
+                  const mode =
+                    currentVal === 'new'
+                      ? 'new'
+                      : currentVal === null || typeof currentVal === 'number'
+                        ? 'replace'
+                        : undefined;
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                       <Radio.Group
@@ -363,11 +378,7 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
                           if (e.target.value === 'new') {
                             setProfessionMapping((prev) => ({ ...prev, [record.normalized]: 'new' }));
                           } else {
-                            setProfessionMapping((prev) => {
-                              const next = { ...prev };
-                              delete next[record.normalized];
-                              return next;
-                            });
+                            setProfessionMapping((prev) => ({ ...prev, [record.normalized]: null }));
                           }
                         }}
                         size="small"
@@ -377,12 +388,12 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
                       </Radio.Group>
                       {mode === 'replace' && (
                         <Select
-                          placeholder="Выберите профессию"
+                          placeholder="Выберите профессию (только не из файла)"
                           value={typeof currentVal === 'number' ? currentVal : undefined}
                           onChange={(val) =>
                             setProfessionMapping((prev) => ({ ...prev, [record.normalized]: val }))
                           }
-                          options={professionOptions}
+                          options={replaceProfessionOptions}
                           showSearch
                           filterOption={(input, option) =>
                             (option?.label as string || '').toLowerCase().includes(input.toLowerCase())
@@ -445,25 +456,21 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
             </Descriptions>
           )}
 
-          {previewResult.new_professions.length > 0 && (
-            <Descriptions bordered size="small" column={1} title="Новые профессии">
-              {previewResult.new_professions.map((p) => {
-                const val = professionMapping[p.normalized];
-                let label: React.ReactNode = <Typography.Text type="secondary">Не задано</Typography.Text>;
-                if (val === 'new') {
-                  label = 'Будет создана';
-                } else if (typeof val === 'number') {
-                  const existing = professionsData?.results?.find((pr: Profession) => pr.id === val);
-                  label = existing ? `→ ${existing.number}. ${existing.name}` : `→ ID ${val}`;
-                }
-                return (
+          {(() => {
+            const onlyNew = previewResult.new_professions.filter(
+              (p) => professionMapping[p.normalized] === 'new',
+            );
+            if (onlyNew.length === 0) return null;
+            return (
+              <Descriptions bordered size="small" column={1} title="Новые профессии">
+                {onlyNew.map((p) => (
                   <Descriptions.Item key={p.normalized} label={p.name}>
-                    {label}
+                    Будет создана
                   </Descriptions.Item>
-                );
-              })}
-            </Descriptions>
-          )}
+                ))}
+              </Descriptions>
+            );
+          })()}
 
           {previewResult.preview.errors.length > 0 && (
             <Alert

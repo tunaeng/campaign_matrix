@@ -670,6 +670,7 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
 
         new_professions = []
         new_professions_seen = set()
+        existing_profession_ids_in_file = set()
 
         existing = {
             (s.profession_id, s.region_id): s
@@ -721,6 +722,7 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
                     created_professions += 1
                 created_statuses += len(region_columns)
             else:
+                existing_profession_ids_in_file.add(profession.id)
                 for col_idx, region in region_columns:
                     cell_val = row[col_idx] if col_idx < len(row) else ""
                     is_demanded = self._to_bool(cell_val)
@@ -734,6 +736,7 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
         return {
             "invalid_regions": invalid_regions,
             "new_professions": new_professions,
+            "existing_profession_ids_in_file": list(existing_profession_ids_in_file),
             "preview": {
                 "created_professions": created_professions,
                 "created_statuses": created_statuses,
@@ -775,6 +778,7 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
         invalid_regions_seen = set()
         new_professions = []
         new_professions_seen = set()
+        existing_profession_ids_in_file = set()
 
         existing = {
             (s.federal_operator_id, s.profession_id, s.region_id, s.year): s
@@ -859,6 +863,7 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
                         created_professions += 1
                     created_statuses += 1
                 else:
+                    existing_profession_ids_in_file.add(profession.id)
                     demanded_raw = row[demanded_col] if demanded_col < len(row) else ""
                     is_demanded = self._to_bool(demanded_raw)
                     year = default_year
@@ -878,6 +883,7 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
         return {
             "invalid_regions": invalid_regions,
             "new_professions": new_professions,
+            "existing_profession_ids_in_file": list(existing_profession_ids_in_file),
             "preview": {
                 "created_professions": created_professions,
                 "created_statuses": created_statuses,

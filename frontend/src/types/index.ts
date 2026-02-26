@@ -208,6 +208,8 @@ export interface ImportPreviewSummary {
 export interface ImportPreviewResult {
   invalid_regions: ImportPreviewInvalidRegion[];
   new_professions: ImportPreviewNewProfession[];
+  /** IDs профессий, которые уже есть в файле (для фильтра «заменить на» — только не из файла) */
+  existing_profession_ids_in_file?: number[];
   preview: ImportPreviewSummary;
 }
 
