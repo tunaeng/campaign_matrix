@@ -5,6 +5,7 @@ from typing import List
 
 from rest_framework import viewsets, generics, permissions, status
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -25,9 +26,17 @@ from .serializers import (
 )
 
 
+class LargePagination(PageNumberPagination):
+    """Allows clients to request up to 500 items per page (for dropdowns)."""
+    page_size = 50
+    max_page_size = 500
+    page_size_query_param = "page_size"
+
+
 class FederalDistrictViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = FederalDistrict.objects.prefetch_related("regions")
     serializer_class = FederalDistrictSerializer
+    pagination_class = LargePagination
 
     @action(detail=True, methods=["get"])
     def regions(self, request, pk=None):
@@ -41,12 +50,14 @@ class RegionViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RegionSerializer
     filterset_fields = ["federal_district"]
     search_fields = ["name"]
+    pagination_class = LargePagination
 
 
 class ProfessionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Profession.objects.all()
     serializer_class = ProfessionSerializer
     search_fields = ["name", "number"]
+    pagination_class = LargePagination
 
     @action(detail=True, methods=["get"], url_path="demand-map")
     def demand_map(self, request, pk=None):
@@ -100,6 +111,7 @@ class FederalOperatorViewSet(viewsets.ModelViewSet):
     queryset = FederalOperator.objects.all()
     serializer_class = FederalOperatorSerializer
     search_fields = ["name"]
+    pagination_class = LargePagination
 
 
 class ContractViewSet(viewsets.ModelViewSet):
@@ -137,7 +149,14 @@ class DemandMatrixImportView(APIView):
         if value is None:
             return False
         normalized = str(value).strip().lower()
-        return normalized in {"1", "true", "yes", "y", "да", "д", "x", "+"}
+        if normalized in {"1", "true", "yes", "y", "да", "д", "x", "+"}:
+            return True
+        if normalized in {"0", "0.0", "false", "no", "нет", "н"}:
+            return False
+        try:
+            return float(value) == 1
+        except (TypeError, ValueError):
+            return False
 
     @staticmethod
     def _norm_header(value):
@@ -257,16 +276,35 @@ class DemandMatrixImportView(APIView):
             raise ValueError("Matrix file is too short.")
 
         header = rows[0]
-        region_columns = []
+        # Сначала пробуем формат с одной колонкой профессий: [название, регион1, регион2, ...]
+        region_columns_1 = []
+        for idx in range(1, len(header)):
+            name = self._clean_cell(header[idx]).lower()
+            if not name:
+                continue
+            region = region_by_name.get(name)
+            if region:
+                region_columns_1.append((idx, region))
+        # Формат с двумя колонками: [№, Профессия, регион1, ...]
+        region_columns_2 = []
         for idx in range(2, len(header)):
             name = self._clean_cell(header[idx]).lower()
             if not name:
                 continue
             region = region_by_name.get(name)
             if region:
-                region_columns.append((idx, region))
+                region_columns_2.append((idx, region))
 
-        if not region_columns:
+        # Одна колонка профессий только если в ячейке 1 действительно регион (а не "Профессия")
+        if len(region_columns_1) >= 5 and len(header) > 1 and self._clean_cell(header[1]).lower() in region_by_name:
+            region_columns = region_columns_1
+            single_profession_column = True
+            data_start = 1
+        elif len(region_columns_2) >= 5:
+            region_columns = region_columns_2
+            single_profession_column = False
+            data_start = 2
+        else:
             raise ValueError("No region columns found in matrix header.")
 
         created_professions = 0
@@ -284,13 +322,17 @@ class DemandMatrixImportView(APIView):
         to_create = []
         to_update = []
 
-        for row_idx, row in enumerate(rows[2:], start=3):
-            if not row or len(row) < 2:
+        for row_idx, row in enumerate(rows[data_start:], start=data_start + 1):
+            if not row or len(row) < 1:
                 skipped_rows += 1
                 continue
 
-            raw_number = self._clean_cell(row[0]) if len(row) > 0 else ""
-            profession_name = self._clean_cell(row[1]) if len(row) > 1 else ""
+            if single_profession_column:
+                raw_number = ""
+                profession_name = self._clean_cell(row[0]) if len(row) > 0 else ""
+            else:
+                raw_number = self._clean_cell(row[0]) if len(row) > 0 else ""
+                profession_name = self._clean_cell(row[1]) if len(row) > 1 else ""
 
             if not profession_name or profession_name.lower() == "итого":
                 skipped_rows += 1
@@ -542,14 +584,11 @@ class DemandMatrixImportView(APIView):
         }
         profession_by_name = {p.name.strip().lower(): p for p in Profession.objects.all()}
 
-        # Detect wide matrix format: first row has region names from col>=2
+        # Detect wide matrix: first row has region names (col>=2 или col>=1)
         first_row = rows[0] if rows else []
-        matched_regions = 0
-        for cell in first_row[2:]:
-            if self._clean_cell(cell).lower() in region_by_name:
-                matched_regions += 1
-
-        if matched_regions >= 5:
+        matched_2 = sum(1 for c in first_row[2:] if self._clean_cell(c).lower() in region_by_name)
+        matched_1 = sum(1 for c in first_row[1:] if self._clean_cell(c).lower() in region_by_name)
+        if matched_2 >= 5 or matched_1 >= 5:
             response = self._import_wide_matrix(
                 rows,
                 default_year,
@@ -590,8 +629,20 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
         header = rows[0]
         invalid_regions = []
         invalid_regions_seen = set()
-        region_columns = []
+        region_columns_1 = []
+        region_columns_2 = []
 
+        for idx in range(1, len(header)):
+            raw = self._clean_cell(header[idx])
+            norm = self._normalize(raw)
+            if not norm:
+                continue
+            region = region_by_name.get(norm)
+            if region:
+                region_columns_1.append((idx, region))
+            elif norm not in invalid_regions_seen:
+                invalid_regions.append({"raw": raw, "normalized": norm})
+                invalid_regions_seen.add(norm)
         for idx in range(2, len(header)):
             raw = self._clean_cell(header[idx])
             norm = self._normalize(raw)
@@ -599,10 +650,23 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
                 continue
             region = region_by_name.get(norm)
             if region:
-                region_columns.append((idx, region))
+                region_columns_2.append((idx, region))
             elif norm not in invalid_regions_seen:
                 invalid_regions.append({"raw": raw, "normalized": norm})
                 invalid_regions_seen.add(norm)
+
+        if len(region_columns_1) >= 5 and len(header) > 1 and self._normalize(header[1]) in region_by_name:
+            region_columns = region_columns_1
+            data_start = 1
+            single_profession_column = True
+        elif len(region_columns_2) >= 5:
+            region_columns = region_columns_2
+            data_start = 2
+            single_profession_column = False
+        else:
+            region_columns = region_columns_1 or region_columns_2
+            data_start = 1 if (region_columns and region_columns[0][0] == 1) else 2
+            single_profession_column = bool(region_columns and region_columns[0][0] == 1)
 
         new_professions = []
         new_professions_seen = set()
@@ -620,13 +684,17 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
         skipped_rows = 0
         errors = []
 
-        for row_idx, row in enumerate(rows[2:], start=3):
-            if not row or len(row) < 2:
+        for row_idx, row in enumerate(rows[data_start:], start=data_start + 1):
+            if not row or len(row) < 1:
                 skipped_rows += 1
                 continue
 
-            raw_number_str = self._clean_cell(row[0]) if len(row) > 0 else ""
-            profession_name = self._clean_cell(row[1]) if len(row) > 1 else ""
+            if single_profession_column:
+                raw_number_str = ""
+                profession_name = self._clean_cell(row[0]) if len(row) > 0 else ""
+            else:
+                raw_number_str = self._clean_cell(row[0]) if len(row) > 0 else ""
+                profession_name = self._clean_cell(row[1]) if len(row) > 1 else ""
             name_norm = self._normalize(profession_name)
 
             if not profession_name or name_norm == "итого":
@@ -877,13 +945,10 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
         }
 
         first_row = rows[0] if rows else []
-        matched_regions = 0
-        for cell in first_row[2:]:
-            if self._normalize(cell) in region_by_name:
-                matched_regions += 1
-
+        matched_2 = sum(1 for c in first_row[2:] if self._normalize(c) in region_by_name)
+        matched_1 = sum(1 for c in first_row[1:] if self._normalize(c) in region_by_name)
         try:
-            if matched_regions >= 5:
+            if matched_2 >= 5 or matched_1 >= 5:
                 result = self._preview_wide_matrix(
                     rows, region_by_name, profession_by_name,
                     federal_operator, default_year,
@@ -1000,7 +1065,16 @@ class DemandMatrixImportApplyView(DemandMatrixImportView):
             raise ValueError("Matrix file is too short.")
 
         header = rows[0]
-        region_columns = []
+        region_columns_1 = []
+        for idx in range(1, len(header)):
+            raw = self._clean_cell(header[idx])
+            norm = self._normalize(raw)
+            if not norm:
+                continue
+            region = region_by_name.get(norm) or region_mapping.get(norm)
+            if region:
+                region_columns_1.append((idx, region))
+        region_columns_2 = []
         for idx in range(2, len(header)):
             raw = self._clean_cell(header[idx])
             norm = self._normalize(raw)
@@ -1008,9 +1082,18 @@ class DemandMatrixImportApplyView(DemandMatrixImportView):
                 continue
             region = region_by_name.get(norm) or region_mapping.get(norm)
             if region:
-                region_columns.append((idx, region))
+                region_columns_2.append((idx, region))
 
-        if not region_columns:
+        h1 = self._normalize(header[1]) if len(header) > 1 else ""
+        if len(region_columns_1) >= 5 and len(header) > 1 and (h1 in region_by_name or (region_mapping and h1 in region_mapping)):
+            region_columns = region_columns_1
+            single_profession_column = True
+            data_start = 1
+        elif len(region_columns_2) >= 5:
+            region_columns = region_columns_2
+            single_profession_column = False
+            data_start = 2
+        else:
             raise ValueError("No region columns resolved in matrix header.")
 
         counters = {"created_professions": 0}
@@ -1027,13 +1110,17 @@ class DemandMatrixImportApplyView(DemandMatrixImportView):
         to_create = []
         to_update = []
 
-        for row_idx, row in enumerate(rows[2:], start=3):
-            if not row or len(row) < 2:
+        for row_idx, row in enumerate(rows[data_start:], start=data_start + 1):
+            if not row or len(row) < 1:
                 skipped_rows += 1
                 continue
 
-            raw_number_str = self._clean_cell(row[0]) if len(row) > 0 else ""
-            profession_name = self._clean_cell(row[1]) if len(row) > 1 else ""
+            if single_profession_column:
+                raw_number_str = ""
+                profession_name = self._clean_cell(row[0]) if len(row) > 0 else ""
+            else:
+                raw_number_str = self._clean_cell(row[0]) if len(row) > 0 else ""
+                profession_name = self._clean_cell(row[1]) if len(row) > 1 else ""
             name_norm = self._normalize(profession_name)
 
             if not profession_name or name_norm == "итого":
@@ -1300,14 +1387,10 @@ class DemandMatrixImportApplyView(DemandMatrixImportView):
         }
 
         first_row = rows[0] if rows else []
-        matched_regions = 0
-        for cell in first_row[2:]:
-            norm = self._normalize(cell)
-            if norm in region_by_name or norm in region_mapping:
-                matched_regions += 1
-
+        matched_2 = sum(1 for c in first_row[2:] if (self._normalize(c) in region_by_name or self._normalize(c) in region_mapping))
+        matched_1 = sum(1 for c in first_row[1:] if (self._normalize(c) in region_by_name or self._normalize(c) in region_mapping))
         try:
-            if matched_regions >= 5:
+            if matched_2 >= 5 or matched_1 >= 5:
                 result = self._apply_wide_matrix(
                     rows, default_year, federal_operator,
                     region_by_name, profession_by_name,
