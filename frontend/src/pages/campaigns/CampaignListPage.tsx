@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Table, Tag, Button, Space, Select, Typography, Input } from 'antd';
-import { PlusOutlined, SearchOutlined } from '@ant-design/icons';
-import { useCampaigns } from '../../api/hooks';
+import { Card, Table, Tag, Button, Space, Select, Typography, Input, Popconfirm, App, Segmented } from 'antd';
+import { PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, AppstoreOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { useCampaigns, useDeleteCampaign } from '../../api/hooks';
 import type { Campaign } from '../../types';
+import CampaignBoardView from './CampaignBoardView';
 
 const statusColors: Record<string, string> = {
   draft: 'default',
@@ -14,6 +15,9 @@ const statusColors: Record<string, string> = {
 
 export default function CampaignListPage() {
   const navigate = useNavigate();
+  const { message } = App.useApp();
+  const deleteCampaign = useDeleteCampaign();
+  const [viewMode, setViewMode] = useState<'table' | 'board'>('board');
   const [statusFilter, setStatusFilter] = useState<string>();
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
@@ -66,11 +70,12 @@ export default function CampaignListPage() {
       align: 'center' as const,
     },
     {
-      title: 'Заказчиков',
-      dataIndex: 'organizations_count',
-      key: 'orgs',
-      width: 110,
+      title: 'Лидов',
+      dataIndex: 'leads_count',
+      key: 'leads',
+      width: 90,
       align: 'center' as const,
+      render: (v: number | undefined) => v ?? '—',
     },
     {
       title: 'Потребность',
@@ -81,20 +86,57 @@ export default function CampaignListPage() {
       render: (v: number) => v || '—',
     },
     {
-      title: 'Прогноз',
-      dataIndex: 'forecast_demand',
-      key: 'forecast',
-      width: 100,
-      align: 'center' as const,
-      render: (v: number | null) => v ?? '—',
+      title: 'Воронки',
+      dataIndex: 'funnel_names',
+      key: 'funnels',
+      width: 200,
+      render: (v: string[] | undefined) =>
+        v && v.length > 0
+          ? v.map((n, i) => <Tag key={i} color="blue" style={{ marginBottom: 2 }}>{n}</Tag>)
+          : '—',
     },
     {
-      title: 'Дедлайн',
-      dataIndex: 'deadline',
-      key: 'deadline',
-      width: 110,
-      sorter: true,
-      render: (v: string | null) => v || '—',
+      title: '',
+      key: 'actions',
+      width: 90,
+      align: 'center' as const,
+      render: (_: any, record: Campaign) => (
+        <Space size={4}>
+          <Button
+            type="text"
+            size="small"
+            icon={<EditOutlined />}
+            onClick={(e) => { e.stopPropagation(); navigate(`/campaigns/${record.id}/edit`); }}
+            title="Редактировать"
+          />
+          <Popconfirm
+            title="Удалить кампанию?"
+            description={`«${record.name}» будет удалена без возможности восстановления.`}
+            okText="Удалить"
+            okButtonProps={{ danger: true }}
+            cancelText="Отмена"
+            onConfirm={async (e) => {
+              e?.stopPropagation();
+              try {
+                await deleteCampaign.mutateAsync(record.id);
+                message.success('Кампания удалена');
+              } catch {
+                message.error('Ошибка при удалении');
+              }
+            }}
+            onCancel={(e) => e?.stopPropagation()}
+          >
+            <Button
+              type="text"
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={(e) => e.stopPropagation()}
+              title="Удалить"
+            />
+          </Popconfirm>
+        </Space>
+      ),
     },
   ];
 
@@ -110,19 +152,32 @@ export default function CampaignListPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           Кампании по сбору потребности
         </Typography.Title>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => navigate('/campaigns/new')}
-        >
-          Создать кампанию
-        </Button>
+        <Space>
+          <Segmented
+            value={viewMode}
+            onChange={(v) => setViewMode(v as 'table' | 'board')}
+            options={[
+              { value: 'table', icon: <UnorderedListOutlined />, label: 'Таблица' },
+              { value: 'board', icon: <AppstoreOutlined />, label: 'Доска' },
+            ]}
+          />
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => navigate('/campaigns/new')}
+          >
+            Создать кампанию
+          </Button>
+        </Space>
       </div>
 
+      {viewMode === 'board' ? (
+        <CampaignBoardView />
+      ) : (
       <Card>
         <Space style={{ marginBottom: 16 }}>
           <Input
@@ -163,6 +218,7 @@ export default function CampaignListPage() {
           size="middle"
         />
       </Card>
+      )}
     </div>
   );
 }

@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
     CampaignViewSet, CampaignQueueViewSet,
-    CampaignOrganizationViewSet,
+    CampaignOrganizationViewSet, LeadViewSet,
 )
 
 router = DefaultRouter()
@@ -13,6 +13,7 @@ router.register(
     CampaignOrganizationViewSet,
     basename="campaign-organization",
 )
+router.register("leads", LeadViewSet, basename="lead")
 
 urlpatterns = [
     path("", include(router.urls)),

@@ -11,6 +11,20 @@ class FederalDistrictSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "code", "short_name"]
 
 
+class RegionNestedSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Region
+        fields = ["name", "code"]
+
+
+class FederalDistrictWithRegionsSerializer(serializers.ModelSerializer):
+    region = RegionNestedSerializer(source="regions", many=True, read_only=True)
+
+    class Meta:
+        model = FederalDistrict
+        fields = ["name", "region"]
+
+
 class RegionSerializer(serializers.ModelSerializer):
     federal_district_name = serializers.CharField(
         source="federal_district.name", read_only=True

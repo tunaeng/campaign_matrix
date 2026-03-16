@@ -24,17 +24,18 @@ class Campaign(models.Model):
         related_name="campaigns",
         verbose_name="Федеральный оператор",
     )
+    funnels = models.ManyToManyField(
+        "funnels.Funnel",
+        through="CampaignFunnel",
+        blank=True,
+        related_name="campaigns",
+        verbose_name="Воронки",
+    )
     hypothesis = models.TextField(
         blank=True, verbose_name="Гипотеза"
     )
     hypothesis_result = models.TextField(
         blank=True, verbose_name="Результат проверки гипотезы"
-    )
-    forecast_demand = models.IntegerField(
-        null=True, blank=True, verbose_name="Прогноз потребности (чел.)"
-    )
-    deadline = models.DateField(
-        null=True, blank=True, verbose_name="Дедлайн"
     )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -56,16 +57,21 @@ class Campaign(models.Model):
 
     @property
     def total_demand(self):
-        return (
-            self.organizations.aggregate(
-                total=models.Sum("demand_count")
+        forecast = (
+            self.leads.aggregate(
+                total=models.Sum("forecast_demand")
             )["total"]
             or 0
         )
+        return forecast
 
     @property
     def organizations_count(self):
         return self.organizations.count()
+
+    @property
+    def leads_count(self):
+        return self.leads.count()
 
 
 class CampaignQueue(models.Model):
@@ -94,6 +100,55 @@ class CampaignQueue(models.Model):
 
     def __str__(self):
         return self.name or f"Очередь {self.queue_number}"
+
+
+class CampaignFunnel(models.Model):
+    campaign = models.ForeignKey(
+        Campaign,
+        on_delete=models.CASCADE,
+        related_name="campaign_funnels",
+        verbose_name="Кампания",
+    )
+    funnel = models.ForeignKey(
+        "funnels.Funnel",
+        on_delete=models.CASCADE,
+        related_name="campaign_funnels",
+        verbose_name="Воронка",
+    )
+
+    class Meta:
+        verbose_name = "Воронка в кампании"
+        verbose_name_plural = "Воронки в кампании"
+        unique_together = ["campaign", "funnel"]
+
+    def __str__(self):
+        return f"{self.campaign.name} — {self.funnel.name}"
+
+
+class QueueStageDeadline(models.Model):
+    queue = models.ForeignKey(
+        CampaignQueue,
+        on_delete=models.CASCADE,
+        related_name="stage_deadlines",
+        verbose_name="Очередь",
+    )
+    funnel_stage = models.ForeignKey(
+        "funnels.FunnelStage",
+        on_delete=models.CASCADE,
+        related_name="queue_deadlines",
+        verbose_name="Стадия воронки",
+    )
+    deadline_days = models.PositiveIntegerField(
+        verbose_name="Дедлайн (раб. дней от старта очереди)",
+    )
+
+    class Meta:
+        verbose_name = "Дедлайн стадии в очереди"
+        verbose_name_plural = "Дедлайны стадий в очередях"
+        unique_together = ["queue", "funnel_stage"]
+
+    def __str__(self):
+        return f"{self.queue} — {self.funnel_stage.name}: {self.deadline_days} дн."
 
 
 class CampaignProgram(models.Model):
@@ -212,3 +267,184 @@ class CampaignOrganization(models.Model):
 
     def __str__(self):
         return f"{self.campaign.name} — {self.organization.name}"
+
+
+class Lead(models.Model):
+    campaign = models.ForeignKey(
+        Campaign,
+        on_delete=models.CASCADE,
+        related_name="leads",
+        verbose_name="Кампания",
+    )
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="leads",
+        verbose_name="Организация",
+    )
+    funnel = models.ForeignKey(
+        "funnels.Funnel",
+        on_delete=models.CASCADE,
+        related_name="leads",
+        verbose_name="Воронка",
+    )
+    queue = models.ForeignKey(
+        CampaignQueue,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="leads",
+        verbose_name="Очередь",
+    )
+    current_stage = models.ForeignKey(
+        "funnels.FunnelStage",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="current_leads",
+        verbose_name="Текущая стадия",
+    )
+    manager = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="managed_leads",
+        verbose_name="Ответственный менеджер",
+    )
+    forecast_demand = models.IntegerField(
+        null=True, blank=True, verbose_name="Прогноз потребности (чел.)"
+    )
+    demand_count = models.IntegerField(
+        default=0, verbose_name="Фактическая потребность (чел.)"
+    )
+    notes = models.TextField(blank=True, verbose_name="Примечания")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Лид"
+        verbose_name_plural = "Лиды"
+        unique_together = ["campaign", "organization", "funnel"]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.organization} [{self.funnel}]"
+
+    def get_stage_deadline(self, stage):
+        """Compute deadline date for a given stage based on queue start_date."""
+        if not self.queue or not self.queue.start_date:
+            return None
+        override = QueueStageDeadline.objects.filter(
+            queue=self.queue, funnel_stage=stage
+        ).first()
+        days = override.deadline_days if override else stage.deadline_days
+        if not days:
+            return None
+        from apps.campaigns.utils import add_business_days
+        return add_business_days(self.queue.start_date, days)
+
+
+class LeadChecklistValue(models.Model):
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.CASCADE,
+        related_name="checklist_values",
+        verbose_name="Лид",
+    )
+    checklist_item = models.ForeignKey(
+        "funnels.StageChecklistItem",
+        on_delete=models.CASCADE,
+        related_name="lead_values",
+        verbose_name="Пункт чек-листа",
+    )
+    is_completed = models.BooleanField(default=False, verbose_name="Выполнен")
+    text_value = models.TextField(blank=True, verbose_name="Текстовое значение")
+    file_value = models.FileField(
+        upload_to="lead_files/", blank=True, verbose_name="Файл"
+    )
+    select_value = models.CharField(
+        max_length=300, blank=True, verbose_name="Выбранное значение"
+    )
+    contact = models.ForeignKey(
+        "organizations.Contact",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="checklist_values",
+        verbose_name="Контакт",
+    )
+    contact_name = models.CharField(max_length=300, blank=True, verbose_name="ФИО контакта")
+    contact_position = models.CharField(max_length=300, blank=True, verbose_name="Должность")
+    contact_phone = models.CharField(max_length=50, blank=True, verbose_name="Телефон")
+    contact_email = models.EmailField(blank=True, verbose_name="Email")
+    contact_messenger = models.CharField(max_length=300, blank=True, verbose_name="Мессенджер")
+    completed_at = models.DateTimeField(null=True, blank=True, verbose_name="Дата выполнения")
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="Выполнил",
+    )
+
+    class Meta:
+        verbose_name = "Значение чек-листа лида"
+        verbose_name_plural = "Значения чек-листа лидов"
+        unique_together = ["lead", "checklist_item"]
+
+    def __str__(self):
+        return f"{self.lead} — {self.checklist_item.text}"
+
+
+class LeadInteraction(models.Model):
+    class Channel(models.TextChoices):
+        EMAIL = "email", "Email"
+        PHONE = "phone", "Телефон"
+        MEETING = "meeting", "Встреча"
+        MESSENGER = "messenger", "Мессенджер"
+        LETTER = "letter", "Письмо"
+        OTHER = "other", "Другое"
+
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.CASCADE,
+        related_name="interactions",
+        verbose_name="Лид",
+    )
+    contact = models.ForeignKey(
+        "organizations.Contact",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="lead_interactions",
+        verbose_name="Контакт",
+    )
+    contact_person = models.CharField(max_length=300, verbose_name="С кем общались")
+    contact_position = models.CharField(
+        max_length=300, blank=True, verbose_name="Должность"
+    )
+    date = models.DateTimeField(verbose_name="Дата и время")
+    channel = models.CharField(
+        max_length=20,
+        choices=Channel.choices,
+        default=Channel.OTHER,
+        verbose_name="Канал",
+    )
+    result = models.TextField(blank=True, verbose_name="Результат")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="Менеджер",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Взаимодействие по лиду"
+        verbose_name_plural = "Взаимодействия по лидам"
+        ordering = ["-date"]
+
+    def __str__(self):
+        return f"{self.lead} — {self.get_channel_display()} ({self.date})"

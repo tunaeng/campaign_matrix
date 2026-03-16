@@ -7,6 +7,9 @@ import CampaignCreatePage from './pages/campaigns/CampaignCreatePage';
 import CampaignDetailPage from './pages/campaigns/CampaignDetailPage';
 import DemandMatrixPage from './pages/campaigns/DemandMatrixPage';
 import DemandMapPage from './pages/campaigns/DemandMapPage';
+import FunnelListPage from './pages/funnels/FunnelListPage';
+import FunnelDetailPage from './pages/funnels/FunnelDetailPage';
+import LeadDetailPage from './pages/leads/LeadDetailPage';
 import { Spin } from 'antd';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -28,7 +31,11 @@ export default function App() {
         <Route index element={<Navigate to="/campaigns" replace />} />
         <Route path="campaigns" element={<CampaignListPage />} />
         <Route path="campaigns/new" element={<CampaignCreatePage />} />
+        <Route path="campaigns/:id/edit" element={<CampaignCreatePage />} />
         <Route path="campaigns/:id" element={<CampaignDetailPage />} />
+        <Route path="campaigns/:campaignId/leads/:leadId" element={<LeadDetailPage />} />
+        <Route path="funnels" element={<FunnelListPage />} />
+        <Route path="funnels/:id" element={<FunnelDetailPage />} />
         <Route path="demand-matrix" element={<DemandMatrixPage />} />
         <Route path="demand-map" element={<DemandMapPage />} />
       </Route>

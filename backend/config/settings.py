@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     "apps.reference",
     "apps.organizations",
     "apps.campaigns",
+    "apps.funnels",
 ]
 
 MIDDLEWARE = [
@@ -136,6 +137,16 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
 }
+
+# External API (Bitrix)
+BITRIX_API_BASE_URL = os.environ.get(
+    "BITRIX_API_BASE_URL",
+    "https://bitrix24.tuna-edu.ru",
+)
+BITRIX_API_TOKEN = os.environ.get(
+    "BITRIX_API_TOKEN",
+    "74e00a3fa74ba59cde6f1317fed8145d6f350d53",
+)
 
 # JWT
 SIMPLE_JWT = {

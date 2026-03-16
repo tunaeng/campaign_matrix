@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Table, Tag, Select, Space, Typography, Input, Switch } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined, FileOutlined } from '@ant-design/icons';
-import { usePrograms, useFederalOperators } from '../../../api/hooks';
+import { usePrograms, useFederalOperators, useProfessions } from '../../../api/hooks';
 import type { CampaignFormData } from '../CampaignCreatePage';
 import type { Program } from '../../../types';
 
@@ -18,11 +18,13 @@ const contractStatusIcons: Record<string, React.ReactNode> = {
 
 export default function StepPrograms({ data, onChange }: Props) {
   const { data: operators } = useFederalOperators();
+  const { data: professionsData } = useProfessions();
   const [search, setSearch] = useState('');
   const [contractFilter, setContractFilter] = useState<string>();
   const [operatorFilter, setOperatorFilter] = useState<number | undefined>(
     data.federal_operator ?? undefined
   );
+  const [professionFilter, setProfessionFilter] = useState<number | undefined>();
   const [demandedOnly, setDemandedOnly] = useState(false);
 
   useEffect(() => {
@@ -35,6 +37,7 @@ export default function StepPrograms({ data, onChange }: Props) {
     search: search || undefined,
     contract_status: contractFilter,
     operator: operatorFilter,
+    profession: professionFilter,
     demanded_only: demandedOnly || undefined,
   });
 
@@ -97,8 +100,23 @@ export default function StepPrograms({ data, onChange }: Props) {
           placeholder="Поиск программы"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ width: 250 }}
+          style={{ width: 280 }}
           allowClear
+        />
+        <Select
+          placeholder="Профессия"
+          allowClear
+          showSearch
+          filterOption={(input, option) =>
+            (option?.label as string ?? '').toLowerCase().includes(input.toLowerCase())
+          }
+          style={{ width: 280 }}
+          value={professionFilter}
+          onChange={setProfessionFilter}
+          options={(professionsData?.results || []).map((p) => ({
+            value: p.id,
+            label: `${p.number}. ${p.name}`,
+          }))}
         />
         <Select
           placeholder="Статус в договоре"
@@ -136,6 +154,17 @@ export default function StepPrograms({ data, onChange }: Props) {
         loading={isLoading}
         size="small"
         pagination={{ pageSize: 15, showTotal: (t) => `Всего: ${t}` }}
+        onRow={(record) => ({
+          onClick: () => {
+            const id = record.id;
+            const isSelected = selectedRowKeys.includes(id);
+            const next = isSelected
+              ? selectedRowKeys.filter((k) => k !== id)
+              : [...selectedRowKeys, id];
+            onChange({ selectedPrograms: next });
+          },
+          style: { cursor: 'pointer' },
+        })}
         rowSelection={{
           selectedRowKeys,
           onChange: (keys) => onChange({ selectedPrograms: keys as number[] }),

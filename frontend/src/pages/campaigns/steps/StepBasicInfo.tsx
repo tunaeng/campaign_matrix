@@ -1,7 +1,6 @@
-import { Form, Input, Select, InputNumber, DatePicker, Typography } from 'antd';
-import { useFederalOperators } from '../../../api/hooks';
+import { Form, Input, Select, Typography, Tag } from 'antd';
+import { useFederalOperators, useFunnels } from '../../../api/hooks';
 import type { CampaignFormData } from '../CampaignCreatePage';
-import dayjs from 'dayjs';
 
 interface Props {
   data: CampaignFormData;
@@ -10,6 +9,7 @@ interface Props {
 
 export default function StepBasicInfo({ data, onChange }: Props) {
   const { data: operators } = useFederalOperators();
+  const { data: funnels } = useFunnels({ is_active: true });
 
   return (
     <div style={{ maxWidth: 600 }}>
@@ -37,31 +37,36 @@ export default function StepBasicInfo({ data, onChange }: Props) {
           />
         </Form.Item>
 
+        <Form.Item label="Воронка (сценарий)">
+          <Select
+            value={data.selectedFunnels[0] ?? null}
+            onChange={(v) => onChange({ selectedFunnels: v != null ? [v] : [] })}
+            placeholder="Выберите воронку"
+            allowClear
+            options={(funnels?.results || []).map((f) => ({
+              value: f.id,
+              label: f.name,
+            }))}
+          />
+          {data.selectedFunnels.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              {(funnels?.results || [])
+                .filter(f => data.selectedFunnels.includes(f.id))
+                .map(f => (
+                  <Tag key={f.id} color="blue" style={{ marginBottom: 4 }}>
+                    {f.name} — {f.stages_count || 0} стадий
+                  </Tag>
+                ))}
+            </div>
+          )}
+        </Form.Item>
+
         <Form.Item label="Гипотеза">
           <Input.TextArea
             value={data.hypothesis}
             onChange={(e) => onChange({ hypothesis: e.target.value })}
             rows={4}
             placeholder="Описание гипотезы: почему это должно сработать, зачем заказчику обучение, ожидания по потребности..."
-          />
-        </Form.Item>
-
-        <Form.Item label="Прогноз потребности (чел.)">
-          <InputNumber
-            value={data.forecast_demand}
-            onChange={(v) => onChange({ forecast_demand: v })}
-            min={0}
-            style={{ width: '100%' }}
-            placeholder="Ожидаемое количество человек"
-          />
-        </Form.Item>
-
-        <Form.Item label="Дедлайн">
-          <DatePicker
-            value={data.deadline ? dayjs(data.deadline) : null}
-            onChange={(d) => onChange({ deadline: d ? d.format('YYYY-MM-DD') : null })}
-            style={{ width: '100%' }}
-            format="DD.MM.YYYY"
           />
         </Form.Item>
       </Form>

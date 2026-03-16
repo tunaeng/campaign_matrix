@@ -106,23 +106,25 @@ export interface Campaign {
   federal_operator_name: string | null;
   hypothesis: string;
   hypothesis_result: string;
-  forecast_demand: number | null;
-  deadline: string | null;
   created_by: number | null;
   created_by_name: string | null;
   total_demand: number;
   organizations_count: number;
+  leads_count?: number;
   programs_count?: number;
   regions_count?: number;
+  funnel_names?: string[];
   created_at: string;
   updated_at: string;
 }
 
 export interface CampaignDetail extends Campaign {
   queues: CampaignQueue[];
+  campaign_funnels: CampaignFunnelEntry[];
   campaign_programs: CampaignProgram[];
   campaign_regions: CampaignRegion[];
   organizations: CampaignOrganization[];
+  leads: Lead[];
 }
 
 export interface CampaignQueue {
@@ -132,6 +134,7 @@ export interface CampaignQueue {
   name: string;
   start_date: string | null;
   end_date: string | null;
+  stage_deadlines: QueueStageDeadline[];
 }
 
 export interface CampaignProgram {
@@ -228,4 +231,198 @@ export interface PaginatedResponse<T> {
   next: string | null;
   previous: string | null;
   results: T[];
+}
+
+// Funnels
+
+export interface ChecklistItemOption {
+  id: number;
+  checklist_item: number;
+  value: string;
+  order: number;
+}
+
+export interface StageChecklistItem {
+  id: number;
+  stage: number;
+  text: string;
+  order: number;
+  confirmation_type: 'none' | 'text' | 'file' | 'select' | 'contact';
+  confirmation_type_display: string;
+  options: ChecklistItemOption[];
+}
+
+export interface FunnelStage {
+  id: number;
+  funnel: number;
+  name: string;
+  order: number;
+  deadline_days: number;
+  is_rejection: boolean;
+  checklist_items: StageChecklistItem[];
+}
+
+export interface Funnel {
+  id: number;
+  name: string;
+  description: string;
+  is_active: boolean;
+  stages_count?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FunnelDetail extends Funnel {
+  stages: FunnelStage[];
+}
+
+// Leads
+
+export interface Contact {
+  id: number;
+  organization: number;
+  organization_name: string;
+  type: 'person' | 'department' | 'main' | 'other';
+  type_display: string;
+  comment: string;
+  current: boolean;
+  first_name: string;
+  last_name: string;
+  middle_name: string;
+  position: string;
+  phone: string;
+  email: string;
+  messenger: string;
+  is_manager: boolean;
+  department_name: string;
+  full_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LeadChecklistValue {
+  id: number;
+  lead: number;
+  checklist_item: number;
+  checklist_item_text: string;
+  confirmation_type: string;
+  stage_id: number;
+  options: string[];
+  is_completed: boolean;
+  text_value: string;
+  file_value: string | null;
+  select_value: string;
+  contact: number | null;
+  contact_full_name: string | null;
+  contact_name: string;
+  contact_position: string;
+  contact_phone: string;
+  contact_email: string;
+  contact_messenger: string;
+  completed_at: string | null;
+  completed_by: number | null;
+}
+
+export interface LeadInteraction {
+  id: number;
+  lead: number;
+  contact: number | null;
+  contact_full_name: string | null;
+  contact_person: string;
+  contact_position: string;
+  contact_position_from_ref: string | null;
+  date: string;
+  channel: string;
+  channel_display: string;
+  result: string;
+  created_by: number | null;
+  created_by_name: string | null;
+  created_at: string;
+}
+
+export interface LeadStageDeadline {
+  stage_id: number;
+  stage_name: string;
+  order: number;
+  deadline_days: number;
+  deadline_date: string | null;
+  is_rejection: boolean;
+}
+
+export interface Lead {
+  id: number;
+  campaign: number;
+  organization: number;
+  organization_name: string;
+  organization_region: string | null;
+  funnel: number;
+  funnel_name: string;
+  queue: number | null;
+  queue_name: string | null;
+  current_stage: number | null;
+  current_stage_name: string | null;
+  current_stage_is_rejection: boolean;
+  manager: number | null;
+  manager_name: string | null;
+  forecast_demand: number | null;
+  demand_count: number;
+  notes: string;
+  checklist_progress: { total: number; completed: number } | null;
+  checklist_summary: { text: string; done: boolean }[];
+  last_interaction: {
+    contact_person: string;
+    date: string | null;
+    channel: string;
+    result: string;
+  } | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LeadDetail extends Lead {
+  checklist_values: LeadChecklistValue[];
+  interactions: LeadInteraction[];
+  stage_deadlines: LeadStageDeadline[];
+}
+
+// External organizations (Bitrix API)
+
+export interface ExternalOrganization {
+  name: string;
+  full_name: string;
+  type: string;
+  region: string;
+  federal_company: boolean;
+  fed_district: string;
+  prof_activity: string;
+  projects: { name: string }[];
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExternalFedDistrict {
+  name: string;
+  region: { name: string }[];
+}
+
+export interface ExternalOrgType {
+  name: string;
+}
+
+// Campaign Funnel
+
+export interface CampaignFunnelEntry {
+  id: number;
+  campaign: number;
+  funnel: number;
+  funnel_name: string;
+}
+
+export interface QueueStageDeadline {
+  id: number;
+  queue: number;
+  funnel_stage: number;
+  stage_name: string;
+  deadline_days: number;
 }

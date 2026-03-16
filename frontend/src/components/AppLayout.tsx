@@ -7,6 +7,7 @@ import {
   EnvironmentOutlined,
   AppstoreOutlined,
   LogoutOutlined,
+  FunnelPlotOutlined,
 } from '@ant-design/icons';
 import { useMe } from '../api/hooks';
 
@@ -25,6 +26,7 @@ export default function AppLayout() {
 
   const selectedMenuKey = (() => {
     if (location.pathname.startsWith('/campaigns/')) return '/campaigns';
+    if (location.pathname.startsWith('/funnels/')) return '/funnels';
     return location.pathname;
   })();
 
@@ -38,6 +40,11 @@ export default function AppLayout() {
       key: '/campaigns/new',
       icon: <PlusOutlined />,
       label: 'Новая кампания',
+    },
+    {
+      key: '/funnels',
+      icon: <FunnelPlotOutlined />,
+      label: 'Воронки',
     },
     {
       key: '/demand-professions',

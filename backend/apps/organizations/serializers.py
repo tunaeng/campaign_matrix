@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Organization, OrganizationInteraction
+from .models import Organization, OrganizationInteraction, Contact
 
 
 class OrganizationInteractionSerializer(serializers.ModelSerializer):
@@ -48,6 +48,28 @@ class OrganizationSerializer(serializers.ModelSerializer):
 
     def get_interactions_count(self, obj):
         return obj.interactions.count()
+
+
+class ContactSerializer(serializers.ModelSerializer):
+    organization_name = serializers.CharField(
+        source="organization.name", read_only=True
+    )
+    full_name = serializers.CharField(read_only=True)
+    type_display = serializers.CharField(
+        source="get_type_display", read_only=True
+    )
+
+    class Meta:
+        model = Contact
+        fields = [
+            "id", "organization", "organization_name",
+            "type", "type_display", "comment", "current",
+            "first_name", "last_name", "middle_name",
+            "position", "phone", "email", "messenger",
+            "is_manager", "department_name", "full_name",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
 
 
 class OrganizationShortSerializer(serializers.ModelSerializer):

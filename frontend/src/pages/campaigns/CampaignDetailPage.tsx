@@ -1,12 +1,13 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Descriptions, Tag, Tabs, Table, Spin, Typography,
-  Button, Space, Statistic, Row, Col, Select, App,
+  Button, Space, Statistic, Row, Col, Select, App, Progress, Segmented,
 } from 'antd';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, AppstoreOutlined, UnorderedListOutlined } from '@ant-design/icons';
 import { useCampaign, useUpdateCampaign } from '../../api/hooks';
-import type { CampaignOrganization } from '../../types';
+import type { CampaignOrganization, Lead } from '../../types';
+import LeadBoardView from './LeadBoardView';
 
 const statusColors: Record<string, string> = {
   draft: 'default',
@@ -29,26 +30,24 @@ export default function CampaignDetailPage() {
   const navigate = useNavigate();
   const { data: campaign, isLoading } = useCampaign(id!);
   const updateCampaign = useUpdateCampaign(id!);
+  const [leadsView, setLeadsView] = useState<'table' | 'board'>('board');
 
-  const orgStatusSummary = useMemo(() => {
-    if (!campaign) return {};
-    const summary: Record<string, { count: number; label: string }> = {};
-    for (const org of campaign.organizations) {
-      if (!summary[org.status]) {
-        summary[org.status] = { count: 0, label: org.status_display };
-      }
-      summary[org.status].count += 1;
+  const uniqueManagers = useMemo(() => {
+    if (!campaign) return [];
+    const managerSet = new Map<number, string>();
+    for (const p of campaign.campaign_programs) {
+      if (p.manager && p.manager_name) managerSet.set(p.manager, p.manager_name);
     }
-    return summary;
-  }, [campaign]);
-
-  const managerSummary = useMemo(() => {
-    if (!campaign) return { programs: 0, regions: 0, organizations: 0 };
-    return {
-      programs: campaign.campaign_programs.filter((p) => p.manager).length,
-      regions: campaign.campaign_regions.filter((r) => r.manager).length,
-      organizations: campaign.organizations.filter((o) => o.manager).length,
-    };
+    for (const r of campaign.campaign_regions) {
+      if (r.manager && r.manager_name) managerSet.set(r.manager, r.manager_name);
+    }
+    for (const o of campaign.organizations) {
+      if (o.manager && o.manager_name) managerSet.set(o.manager, o.manager_name);
+    }
+    for (const l of (campaign.leads || [])) {
+      if (l.manager && l.manager_name) managerSet.set(l.manager, l.manager_name);
+    }
+    return Array.from(managerSet.entries()).map(([id, name]) => ({ id, name }));
   }, [campaign]);
 
   if (isLoading) return <div style={{ textAlign: 'center', paddingTop: 100 }}><Spin size="large" /></div>;
@@ -63,6 +62,9 @@ export default function CampaignDetailPage() {
     }
   };
 
+  const leads = campaign.leads || [];
+  const funnelNames = campaign.campaign_funnels?.map(f => f.funnel_name) || [];
+
   const programColumns = [
     { title: 'Программа', dataIndex: 'program_name', key: 'name' },
     { title: 'Профессия', dataIndex: 'profession_name', key: 'profession' },
@@ -76,54 +78,108 @@ export default function CampaignDetailPage() {
     { title: 'Менеджер', dataIndex: 'manager_name', key: 'manager', render: (v: string | null) => v || '—' },
   ];
 
+  const leadColumns = [
+    {
+      title: 'Организация',
+      dataIndex: 'organization_name',
+      key: 'name',
+      render: (text: string, record: Lead) => (
+        <a onClick={() => navigate(`/campaigns/${id}/leads/${record.id}`)}>{text}</a>
+      ),
+    },
+    {
+      title: 'Регион',
+      dataIndex: 'organization_region',
+      key: 'region',
+      width: 160,
+      render: (v: string | null) => v || '—',
+    },
+    {
+      title: 'Воронка',
+      dataIndex: 'funnel_name',
+      key: 'funnel',
+      width: 160,
+      render: (v: string) => <Tag color="blue">{v}</Tag>,
+    },
+    {
+      title: 'Стадия',
+      dataIndex: 'current_stage_name',
+      key: 'stage',
+      width: 160,
+      render: (v: string | null) => v ? <Tag color="processing">{v}</Tag> : <Tag>Не начата</Tag>,
+    },
+    {
+      title: 'Прогресс',
+      key: 'progress',
+      width: 120,
+      render: (_: any, record: Lead) => {
+        if (!record.checklist_progress) return '—';
+        const { completed, total } = record.checklist_progress;
+        const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+        return <Progress percent={pct} size="small" format={() => `${completed}/${total}`} />;
+      },
+    },
+    {
+      title: 'Очередь',
+      dataIndex: 'queue_name',
+      key: 'queue',
+      width: 120,
+      render: (v: string | null) => v || '—',
+    },
+    {
+      title: 'Менеджер',
+      dataIndex: 'manager_name',
+      key: 'manager',
+      width: 140,
+      render: (v: string | null) => v || '—',
+    },
+  ];
+
   const orgColumns = [
     { title: 'Организация', dataIndex: 'organization_name', key: 'name' },
     { title: 'Регион', dataIndex: 'organization_region', key: 'region', render: (v: string | null) => v || '—' },
     { title: 'Тип', dataIndex: 'organization_type', key: 'type' },
     {
       title: 'Статус', dataIndex: 'status', key: 'status',
-      render: (status: string, record: CampaignOrganization) => (
-        <Tag color={orgStatusColors[status]}>{record.status_display}</Tag>
+      render: (s: string, record: CampaignOrganization) => (
+        <Tag color={orgStatusColors[s]}>{record.status_display}</Tag>
       ),
     },
     { title: 'Потребность', dataIndex: 'demand_count', key: 'demand', align: 'center' as const },
     { title: 'Менеджер', dataIndex: 'manager_name', key: 'manager', render: (v: string | null) => v || '—' },
   ];
 
-  const uniqueManagers = useMemo(() => {
-    const managerSet = new Map<number, string>();
-    for (const p of campaign.campaign_programs) {
-      if (p.manager && p.manager_name) managerSet.set(p.manager, p.manager_name);
-    }
-    for (const r of campaign.campaign_regions) {
-      if (r.manager && r.manager_name) managerSet.set(r.manager, r.manager_name);
-    }
-    for (const o of campaign.organizations) {
-      if (o.manager && o.manager_name) managerSet.set(o.manager, o.manager_name);
-    }
-    return Array.from(managerSet.entries()).map(([id, name]) => ({ id, name }));
-  }, [campaign]);
-
-  const managerColumns = [
-    { title: 'Менеджер', dataIndex: 'name', key: 'name' },
-    {
-      title: 'Программы', key: 'programs',
-      render: (_: any, record: { id: number }) =>
-        campaign.campaign_programs.filter((p) => p.manager === record.id).length || '—',
-    },
-    {
-      title: 'Регионы', key: 'regions',
-      render: (_: any, record: { id: number }) =>
-        campaign.campaign_regions.filter((r) => r.manager === record.id).length || '—',
-    },
-    {
-      title: 'Организации', key: 'orgs',
-      render: (_: any, record: { id: number }) =>
-        campaign.organizations.filter((o) => o.manager === record.id).length || '—',
-    },
-  ];
-
   const tabItems = [
+    {
+      key: 'leads',
+      label: `Лиды (${leads.length})`,
+      children: (
+        <div>
+          <div style={{ marginBottom: 12 }}>
+            <Segmented
+              value={leadsView}
+              onChange={(v) => setLeadsView(v as 'table' | 'board')}
+              options={[
+                { value: 'table', icon: <UnorderedListOutlined />, label: 'Таблица' },
+                { value: 'board', icon: <AppstoreOutlined />, label: 'Доска' },
+              ]}
+              size="small"
+            />
+          </div>
+          {leadsView === 'board' ? (
+            <LeadBoardView campaign={campaign} />
+          ) : (
+            <Table
+              dataSource={leads}
+              columns={leadColumns}
+              rowKey="id"
+              size="small"
+              pagination={{ pageSize: 20 }}
+            />
+          )}
+        </div>
+      ),
+    },
     {
       key: 'programs',
       label: `Программы (${campaign.campaign_programs.length})`,
@@ -137,7 +193,7 @@ export default function CampaignDetailPage() {
         />
       ),
     },
-    {
+    ...(campaign.campaign_regions.length > 0 ? [{
       key: 'regions',
       label: `Регионы (${campaign.campaign_regions.length})`,
       children: (
@@ -149,65 +205,40 @@ export default function CampaignDetailPage() {
           pagination={false}
         />
       ),
-    },
-    {
+    }] : []),
+    ...(campaign.organizations.length > 0 ? [{
       key: 'organizations',
       label: `Заказчики (${campaign.organizations.length})`,
       children: (
-        <div>
-          {Object.keys(orgStatusSummary).length > 0 && (
-            <Space wrap style={{ marginBottom: 16 }}>
-              {Object.entries(orgStatusSummary).map(([status, info]) => (
-                <Tag key={status} color={orgStatusColors[status]}>
-                  {info.label}: {info.count}
-                </Tag>
-              ))}
-            </Space>
-          )}
-          <Table
-            dataSource={campaign.organizations}
-            columns={orgColumns}
-            rowKey="id"
-            size="small"
-            pagination={{ pageSize: 20 }}
-          />
-        </div>
+        <Table
+          dataSource={campaign.organizations}
+          columns={orgColumns}
+          rowKey="id"
+          size="small"
+          pagination={{ pageSize: 20 }}
+        />
       ),
-    },
+    }] : []),
     {
       key: 'managers',
       label: `Менеджеры (${uniqueManagers.length})`,
       children: (
         <div>
-          <Row gutter={16} style={{ marginBottom: 16 }}>
-            <Col>
-              <Statistic
-                title="По программам"
-                value={managerSummary.programs}
-                suffix={`/ ${campaign.campaign_programs.length}`}
-                valueStyle={{ fontSize: 18 }}
-              />
-            </Col>
-            <Col>
-              <Statistic
-                title="По регионам"
-                value={managerSummary.regions}
-                suffix={`/ ${campaign.campaign_regions.length}`}
-                valueStyle={{ fontSize: 18 }}
-              />
-            </Col>
-            <Col>
-              <Statistic
-                title="По организациям"
-                value={managerSummary.organizations}
-                suffix={`/ ${campaign.organizations.length}`}
-                valueStyle={{ fontSize: 18 }}
-              />
-            </Col>
-          </Row>
           <Table
             dataSource={uniqueManagers}
-            columns={managerColumns}
+            columns={[
+              { title: 'Менеджер', dataIndex: 'name', key: 'name' },
+              {
+                title: 'Лидов', key: 'leads',
+                render: (_: any, record: { id: number }) =>
+                  leads.filter(l => l.manager === record.id).length || '—',
+              },
+              {
+                title: 'Программ', key: 'programs',
+                render: (_: any, record: { id: number }) =>
+                  campaign.campaign_programs.filter(p => p.manager === record.id).length || '—',
+              },
+            ]}
             rowKey="id"
             size="small"
             pagination={false}
@@ -234,7 +265,7 @@ export default function CampaignDetailPage() {
             <Typography.Title level={4} style={{ marginBottom: 8 }}>
               {campaign.name}
             </Typography.Title>
-            <Space>
+            <Space wrap>
               <Tag color={statusColors[campaign.status]}>{campaign.status_display}</Tag>
               <Select
                 value={campaign.status}
@@ -248,6 +279,9 @@ export default function CampaignDetailPage() {
                   { value: 'completed', label: 'Завершена' },
                 ]}
               />
+              {funnelNames.map((name, i) => (
+                <Tag key={i} color="blue">{name}</Tag>
+              ))}
             </Space>
           </div>
         </div>
@@ -257,10 +291,7 @@ export default function CampaignDetailPage() {
             <Statistic title="Потребность" value={campaign.total_demand} suffix="чел." />
           </Col>
           <Col span={4}>
-            <Statistic title="Прогноз" value={campaign.forecast_demand || 0} suffix="чел." />
-          </Col>
-          <Col span={4}>
-            <Statistic title="Заказчиков" value={campaign.organizations_count} />
+            <Statistic title="Лидов" value={leads.length} />
           </Col>
           <Col span={4}>
             <Statistic title="Программ" value={campaign.campaign_programs.length} />
@@ -276,9 +307,6 @@ export default function CampaignDetailPage() {
         <Descriptions column={2} style={{ marginTop: 16 }} size="small">
           <Descriptions.Item label="Федеральный оператор">
             {campaign.federal_operator_name || '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Дедлайн">
-            {campaign.deadline || '—'}
           </Descriptions.Item>
           <Descriptions.Item label="Создал">
             {campaign.created_by_name || '—'}
@@ -308,7 +336,7 @@ export default function CampaignDetailPage() {
       </Card>
 
       <Card>
-        <Tabs items={tabItems} />
+        <Tabs items={tabItems} defaultActiveKey="leads" />
       </Card>
     </div>
   );

@@ -2,6 +2,8 @@ from django.contrib import admin
 from .models import (
     Campaign, CampaignQueue, CampaignProgram,
     CampaignRegion, CampaignOrganization,
+    CampaignFunnel, QueueStageDeadline,
+    Lead, LeadChecklistValue, LeadInteraction,
 )
 
 
@@ -25,12 +27,54 @@ class OrganizationInline(admin.TabularInline):
     extra = 0
 
 
+class CampaignFunnelInline(admin.TabularInline):
+    model = CampaignFunnel
+    extra = 0
+
+
+class LeadInline(admin.TabularInline):
+    model = Lead
+    extra = 0
+    fields = ["organization", "funnel", "queue", "current_stage", "manager"]
+
+
 @admin.register(Campaign)
 class CampaignAdmin(admin.ModelAdmin):
     list_display = [
         "name", "status", "federal_operator",
-        "forecast_demand", "deadline", "created_by", "created_at",
+        "created_by", "created_at",
     ]
     list_filter = ["status", "federal_operator"]
     search_fields = ["name"]
-    inlines = [QueueInline, ProgramInline, RegionInline, OrganizationInline]
+    inlines = [
+        CampaignFunnelInline, QueueInline, ProgramInline,
+        RegionInline, OrganizationInline, LeadInline,
+    ]
+
+
+class QueueStageDeadlineInline(admin.TabularInline):
+    model = QueueStageDeadline
+    extra = 0
+
+
+@admin.register(CampaignQueue)
+class CampaignQueueAdmin(admin.ModelAdmin):
+    list_display = ["campaign", "queue_number", "name", "start_date"]
+    inlines = [QueueStageDeadlineInline]
+
+
+class LeadChecklistValueInline(admin.TabularInline):
+    model = LeadChecklistValue
+    extra = 0
+
+
+class LeadInteractionInline(admin.TabularInline):
+    model = LeadInteraction
+    extra = 0
+
+
+@admin.register(Lead)
+class LeadAdmin(admin.ModelAdmin):
+    list_display = ["organization", "campaign", "funnel", "current_stage", "manager"]
+    list_filter = ["campaign", "funnel"]
+    inlines = [LeadChecklistValueInline, LeadInteractionInline]

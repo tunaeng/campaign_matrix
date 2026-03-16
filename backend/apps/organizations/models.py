@@ -62,6 +62,58 @@ class Organization(models.Model):
         return self.interactions.exists()
 
 
+class Contact(models.Model):
+    class ContactType(models.TextChoices):
+        PERSON = "person", "Физическое лицо"
+        DEPARTMENT = "department", "Отдел"
+        MAIN = "main", "Основной"
+        OTHER = "other", "Другое"
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="contacts",
+        verbose_name="Организация",
+    )
+    type = models.CharField(
+        max_length=20,
+        choices=ContactType.choices,
+        default=ContactType.PERSON,
+        verbose_name="Тип контакта",
+    )
+    comment = models.TextField(blank=True, verbose_name="Комментарий")
+    current = models.BooleanField(default=True, verbose_name="Актуальный")
+    first_name = models.CharField(max_length=200, blank=True, verbose_name="Имя")
+    last_name = models.CharField(max_length=200, blank=True, verbose_name="Фамилия")
+    middle_name = models.CharField(max_length=200, blank=True, verbose_name="Отчество")
+    position = models.CharField(max_length=300, blank=True, verbose_name="Должность")
+    phone = models.CharField(max_length=50, blank=True, verbose_name="Телефон")
+    email = models.EmailField(blank=True, verbose_name="Email")
+    messenger = models.CharField(max_length=300, blank=True, verbose_name="Мессенджер")
+    is_manager = models.BooleanField(default=False, verbose_name="Руководитель")
+    department_name = models.CharField(
+        max_length=300, blank=True, verbose_name="Название отдела"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Контакт"
+        verbose_name_plural = "Контакты"
+        ordering = ["-current", "last_name", "first_name"]
+
+    def __str__(self):
+        if self.type == self.ContactType.PERSON:
+            return f"{self.last_name} {self.first_name} {self.middle_name}".strip() or "—"
+        if self.type == self.ContactType.DEPARTMENT:
+            return self.department_name or "—"
+        return f"{self.get_type_display()} ({self.organization})"
+
+    @property
+    def full_name(self):
+        return f"{self.last_name} {self.first_name} {self.middle_name}".strip()
+
+
 class OrganizationInteraction(models.Model):
     class InteractionType(models.TextChoices):
         EMAIL = "email", "Email"

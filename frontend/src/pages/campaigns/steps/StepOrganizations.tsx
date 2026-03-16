@@ -1,36 +1,200 @@
-import { useState } from 'react';
-import { Table, Select, Space, Typography, Input, Tag, Switch } from 'antd';
-import { useOrganizations } from '../../../api/hooks';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import {
+  Table, Select, TreeSelect, Space, Typography, Input, Tag, Switch, Button,
+  DatePicker, InputNumber, Card, Divider, Collapse,
+} from 'antd';
+import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
+import {
+  useExternalOrganizations, useExternalFedDistricts,
+  useExternalOrgTypes, useExternalProfActivities, useFunnels, useFunnel,
+} from '../../../api/hooks';
+
+/** Добавить N рабочих дней к дате (пропуская сб/вс). */
+function addBusinessDays(startDate: string, days: number): string {
+  let date = dayjs(startDate);
+  let remaining = days;
+  while (remaining > 0) {
+    date = date.add(1, 'day');
+    if (date.day() !== 0 && date.day() !== 6) remaining--;
+  }
+  return date.format('DD.MM.YYYY');
+}
 import type { CampaignFormData } from '../CampaignCreatePage';
-import type { Organization } from '../../../types';
+import type { ExternalOrganization } from '../../../types';
 
 interface Props {
   data: CampaignFormData;
   onChange: (partial: Partial<CampaignFormData>) => void;
 }
 
-const orgTypeOptions = [
-  { value: 'ministry', label: 'Министерство/ведомство' },
-  { value: 'enterprise', label: 'Предприятие' },
-  { value: 'education', label: 'Образовательная организация' },
-  { value: 'healthcare', label: 'Учреждение здравоохранения' },
-  { value: 'municipal', label: 'Муниципальное учреждение' },
-  { value: 'other', label: 'Другое' },
-];
-
 export default function StepOrganizations({ data, onChange }: Props) {
-  const [search, setSearch] = useState('');
   const [orgType, setOrgType] = useState<string>();
-  const [hasHistory, setHasHistory] = useState(false);
+  // encoded as "district:ИМЯ" or "region:ИМЯ", multiple
+  const [regionSelection, setRegionSelection] = useState<string[]>([]);
+  // multiple prof activities (tags mode)
+  const [profActivityList, setProfActivityList] = useState<string[]>(data.profActivityList || []);
+  const [federalOnly, setFederalOnly] = useState(false);
+  const [searchTriggered, setSearchTriggered] = useState(false);
 
-  const regionIds = data.regionData.map((rd) => rd.region_id);
+  const { data: fedDistricts } = useExternalFedDistricts();
+  const { data: orgTypes } = useExternalOrgTypes();
+  const { data: profActivitiesData } = useExternalProfActivities();
+  const { data: funnelsData } = useFunnels({ is_active: true });
 
-  const { data: orgs, isLoading } = useOrganizations({
-    search: search || undefined,
-    org_type: orgType,
-    has_history: hasHistory ? 'true' : undefined,
-    region_ids: regionIds.length > 0 ? regionIds.join(',') : undefined,
+  const selectedFunnelId = data.selectedFunnels[0];
+  const { data: funnelDetail } = useFunnel(selectedFunnelId || 0);
+
+  const hasFederalFunnel = data.selectedFunnels.some(fid => {
+    const funnel = funnelsData?.results?.find(f => f.id === fid);
+    return funnel?.name?.toLowerCase().includes('фед');
   });
+
+  // Track which funnel we've already initialized to avoid repeated writes
+  const initializedFunnelRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!funnelDetail?.stages?.length) return;
+    if (initializedFunnelRef.current === funnelDetail.id) return;
+    initializedFunnelRef.current = funnelDetail.id;
+
+    const stages = [...funnelDetail.stages].filter(s => !s.is_rejection).sort((a, b) => a.order - b.order);
+    const today = dayjs().format('YYYY-MM-DD');
+
+    const newQueues = data.queues.map((q, idx) => {
+      const existingIds = new Set(q.stage_deadlines.map(d => d.funnel_stage_id));
+      const missingStages = stages.filter(s => !existingIds.has(s.id));
+      const newDeadlines = missingStages.length > 0
+        ? [
+            ...q.stage_deadlines,
+            ...missingStages.map(s => ({ funnel_stage_id: s.id, deadline_days: s.deadline_days })),
+          ]
+        : q.stage_deadlines;
+      const newStartDate = (idx === 0 && !q.start_date) ? today : q.start_date;
+      return { ...q, stage_deadlines: newDeadlines, start_date: newStartDate };
+    });
+    onChange({ queues: newQueues });
+  }, [funnelDetail]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Build treeData for TreeSelect: districts → regions
+  const regionTreeData = useMemo(() =>
+    (fedDistricts || []).map(d => ({
+      title: d.name,
+      value: `district:${d.name}`,
+      selectable: true,
+      children: (d.region || []).map(r => ({
+        title: r.name,
+        value: `region:${r.name}`,
+      })),
+    })),
+    [fedDistricts],
+  );
+
+  const searchParams = useMemo(() => {
+    if (!searchTriggered) return undefined;
+    const params: Record<string, any> = {};
+    if (orgType) params.type = orgType;
+    if (regionSelection.length > 0) {
+      const districts = regionSelection
+        .filter(v => v.startsWith('district:'))
+        .map(v => v.slice('district:'.length));
+      const regions = regionSelection
+        .filter(v => v.startsWith('region:'))
+        .map(v => v.slice('region:'.length));
+      if (districts.length) params.fed_districts = districts.join(',');
+      if (regions.length) params.regions = regions.join(',');
+    }
+    if (profActivityList.length > 0) params.prof_activities = profActivityList.join(',');
+    if (federalOnly || hasFederalFunnel) params.federal = 'true';
+    return params;
+  }, [searchTriggered, orgType, regionSelection, profActivityList, federalOnly, hasFederalFunnel]);
+
+  // Sync profActivityList changes up to formData
+  const prevProfRef = useRef(profActivityList);
+  useEffect(() => {
+    if (prevProfRef.current !== profActivityList) {
+      prevProfRef.current = profActivityList;
+      onChange({ profActivityList });
+    }
+  }, [profActivityList]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { data: externalOrgs, isLoading: loadingOrgs } = useExternalOrganizations(searchParams);
+
+  const orgList = externalOrgs || [];
+
+  const selectedOrgNames = new Set(data.selectedExternalOrgs.map(o => o.name));
+
+  const handleSelectOrg = (keys: React.Key[], rows: ExternalOrganization[]) => {
+    const existing = new Map(data.selectedExternalOrgs.map(o => [o.name, o]));
+    for (const row of rows) {
+      if (!existing.has(row.name)) {
+        existing.set(row.name, row);
+      }
+    }
+    const deselectedNames = orgList
+      .filter(o => !keys.includes(o.name))
+      .map(o => o.name);
+    for (const name of deselectedNames) {
+      existing.delete(name);
+    }
+    onChange({ selectedExternalOrgs: Array.from(existing.values()) });
+  };
+
+  const sortedStages = useMemo(
+    () => funnelDetail?.stages
+      ? [...funnelDetail.stages].filter(s => !s.is_rejection).sort((a, b) => a.order - b.order)
+      : [],
+    [funnelDetail],
+  );
+
+  const addQueue = () => {
+    const nextNum = data.queues.length + 1;
+    onChange({
+      queues: [
+        ...data.queues,
+        {
+          queue_number: nextNum,
+          name: `Очередь ${nextNum}`,
+          start_date: null,
+          end_date: null,
+          stage_deadlines: [],
+        },
+      ],
+    });
+  };
+
+  const removeQueue = (idx: number) => {
+    if (data.queues.length <= 1) return;
+    const newQueues = data.queues.filter((_, i) => i !== idx);
+    onChange({ queues: newQueues });
+  };
+
+  const updateQueue = (idx: number, field: string, value: any) => {
+    const newQueues = [...data.queues];
+    newQueues[idx] = { ...newQueues[idx], [field]: value };
+    onChange({ queues: newQueues });
+  };
+
+  const updateStageDeadline = (queueIdx: number, stageId: number, days: number | null) => {
+    const newQueues = [...data.queues];
+    const queue = { ...newQueues[queueIdx] };
+    const deadlines = [...(queue.stage_deadlines || [])];
+    const existingIdx = deadlines.findIndex(d => d.funnel_stage_id === stageId);
+    if (existingIdx >= 0) {
+      deadlines[existingIdx] = { ...deadlines[existingIdx], deadline_days: days || 0 };
+    } else {
+      deadlines.push({ funnel_stage_id: stageId, deadline_days: days || 0 });
+    }
+    queue.stage_deadlines = deadlines;
+    newQueues[queueIdx] = queue;
+    onChange({ queues: newQueues });
+  };
+
+  const updateOrgQueue = (orgName: string, queueNum: number) => {
+    const assignments = { ...(data.orgQueueAssignments || {}) };
+    assignments[orgName] = queueNum;
+    onChange({ orgQueueAssignments: assignments });
+  };
 
   const columns = [
     {
@@ -41,87 +205,225 @@ export default function StepOrganizations({ data, onChange }: Props) {
     },
     {
       title: 'Тип',
-      dataIndex: 'org_type_display',
+      dataIndex: 'type',
       key: 'type',
-      width: 200,
+      width: 150,
     },
     {
       title: 'Регион',
-      dataIndex: 'region_name',
+      dataIndex: 'region',
       key: 'region',
-      width: 200,
-      render: (v: string | null) => v || '—',
+      width: 180,
+      render: (v: string) => v || '—',
     },
     {
-      title: 'История',
-      key: 'history',
-      width: 100,
+      title: 'Округ',
+      dataIndex: 'fed_district',
+      key: 'fed_district',
+      width: 180,
+    },
+    {
+      title: 'Фед.',
+      dataIndex: 'federal_company',
+      key: 'federal',
+      width: 60,
       align: 'center' as const,
-      render: (_: any, record: Organization) =>
-        record.has_interaction_history ? (
-          <Tag color="green">Есть</Tag>
-        ) : (
-          <Tag>Нет</Tag>
-        ),
+      render: (v: boolean) => v ? <Tag color="blue">Да</Tag> : null,
+    },
+  ];
+
+  const selectedColumns = [
+    {
+      title: 'Организация',
+      dataIndex: 'name',
+      key: 'name',
+      ellipsis: true,
     },
     {
-      title: 'Посл. контакт',
-      dataIndex: 'last_interaction_date',
-      key: 'last_date',
-      width: 120,
-      render: (v: string | null) => v || '—',
+      title: 'Регион',
+      dataIndex: 'region',
+      key: 'region',
+      width: 150,
+    },
+    {
+      title: 'Очередь',
+      key: 'queue',
+      width: 140,
+      render: (_: any, record: ExternalOrganization) => (
+        <Select
+          size="small"
+          value={data.orgQueueAssignments?.[record.name] || 1}
+          onChange={(v) => updateOrgQueue(record.name, v)}
+          style={{ width: 120 }}
+          options={data.queues.map(q => ({
+            value: q.queue_number,
+            label: q.name || `Очередь ${q.queue_number}`,
+          }))}
+        />
+      ),
+    },
+    {
+      title: '',
+      key: 'remove',
+      width: 50,
+      render: (_: any, record: ExternalOrganization) => (
+        <Button
+          type="text" danger size="small" icon={<DeleteOutlined />}
+          onClick={() => {
+            onChange({
+              selectedExternalOrgs: data.selectedExternalOrgs.filter(o => o.name !== record.name),
+            });
+          }}
+        />
+      ),
     },
   ];
 
   return (
     <div>
-      <Typography.Title level={5}>Выбор заказчиков</Typography.Title>
-      <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
-        {regionIds.length > 0
-          ? `Показаны организации из выбранных регионов (${regionIds.length}). Используйте фильтры для уточнения.`
-          : 'Выберите регионы на предыдущем шаге для фильтрации организаций по территории.'}
-      </Typography.Text>
+      <Typography.Title level={5}>Организации и очереди</Typography.Title>
 
-      <Space wrap style={{ marginBottom: 16 }}>
-        <Input
-          placeholder="Поиск организации"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ width: 250 }}
-          allowClear
-        />
-        <Select
-          placeholder="Тип организации"
-          allowClear
-          style={{ width: 250 }}
-          value={orgType}
-          onChange={setOrgType}
-          options={orgTypeOptions}
-        />
-        <Space>
-          <Switch checked={hasHistory} onChange={setHasHistory} size="small" />
-          <Typography.Text>Только с историей взаимодействия</Typography.Text>
-        </Space>
-      </Space>
+      <Card size="small" style={{ marginBottom: 16 }} title="Поиск организаций">
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+          <Select
+            placeholder="Тип организации"
+            allowClear
+            style={{ width: 200 }}
+            value={orgType}
+            onChange={setOrgType}
+            options={(orgTypes || []).map(t => ({ value: t.name, label: t.name }))}
+          />
+          <TreeSelect
+            placeholder="Фильтр по округам/регионам"
+            allowClear
+            showSearch
+            treeCheckable
+            showCheckedStrategy={TreeSelect.SHOW_PARENT}
+            style={{ width: 320 }}
+            value={regionSelection}
+            onChange={setRegionSelection}
+            treeData={regionTreeData}
+            treeNodeFilterProp="title"
+            dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
+            maxTagCount={2}
+            maxTagPlaceholder={(omitted) => `+${omitted.length} ещё`}
+            treeLine
+          />
+          <Select
+            mode="multiple"
+            placeholder={hasFederalFunnel ? 'Сфера деятельности (мин. 1)' : 'Сфера деятельности'}
+            value={profActivityList}
+            onChange={setProfActivityList}
+            style={{ minWidth: 220, maxWidth: 360 }}
+            allowClear
+            options={(profActivitiesData || []).map(a => ({ value: a.name, label: a.name }))}
+            status={hasFederalFunnel && profActivityList.length === 0 ? 'warning' : undefined}
+          />
+          <Button type="primary" onClick={() => setSearchTriggered(true)}>
+            Найти организации
+          </Button>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <Switch checked={federalOnly} onChange={setFederalOnly} size="small" />
+          <Typography.Text>Только федеральные</Typography.Text>
+        </div>
 
-      <Table
-        dataSource={orgs?.results || []}
-        columns={columns}
-        rowKey="id"
-        loading={isLoading}
-        size="small"
-        pagination={{ pageSize: 15, showTotal: (t) => `Всего: ${t}` }}
-        rowSelection={{
-          selectedRowKeys: data.selectedOrganizations,
-          onChange: (keys) => onChange({ selectedOrganizations: keys as number[] }),
-        }}
-      />
+        {searchTriggered && (
+          <Table
+            dataSource={orgList}
+            columns={columns}
+            rowKey="name"
+            loading={loadingOrgs}
+            size="small"
+            style={{ marginTop: 12 }}
+            pagination={{ pageSize: 10, showTotal: (t) => `Всего: ${t}` }}
+            rowSelection={{
+              selectedRowKeys: Array.from(selectedOrgNames),
+              onChange: handleSelectOrg,
+            }}
+          />
+        )}
+      </Card>
 
-      {data.selectedOrganizations.length > 0 && (
-        <Typography.Text style={{ marginTop: 8, display: 'block' }}>
-          Выбрано организаций: <strong>{data.selectedOrganizations.length}</strong>
-        </Typography.Text>
+      {data.selectedExternalOrgs.length > 0 && (
+        <Card size="small" style={{ marginBottom: 16 }} title={`Выбранные организации (${data.selectedExternalOrgs.length})`}>
+          <Table
+            dataSource={data.selectedExternalOrgs}
+            columns={selectedColumns}
+            rowKey="name"
+            size="small"
+            pagination={{ pageSize: 10 }}
+          />
+        </Card>
       )}
+
+      <Card size="small" title="Очереди">
+        <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+          Для каждой очереди задайте дату старта и количество рабочих дней на каждый этап воронки. По умолчанию все организации попадают в Очередь 1.
+        </Typography.Text>
+        {data.queues.map((q, qIdx) => (
+          <Card
+            key={qIdx}
+            size="small"
+            style={{ marginBottom: 8 }}
+            title={
+              <Space>
+                <Input
+                  size="small"
+                  value={q.name}
+                  onChange={(e) => updateQueue(qIdx, 'name', e.target.value)}
+                  style={{ width: 160 }}
+                />
+                <DatePicker
+                  size="small"
+                  value={q.start_date ? dayjs(q.start_date) : null}
+                  onChange={(d) => updateQueue(qIdx, 'start_date', d ? d.format('YYYY-MM-DD') : null)}
+                  format="DD.MM.YYYY"
+                  placeholder="Дата старта"
+                />
+                {data.queues.length > 1 && (
+                  <Button size="small" danger icon={<DeleteOutlined />} onClick={() => removeQueue(qIdx)} />
+                )}
+              </Space>
+            }
+          >
+            {sortedStages.length > 0 ? (
+              <div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 4, paddingBottom: 4, borderBottom: '1px solid #f0f0f0' }}>
+                  <Typography.Text type="secondary" style={{ width: 220, fontSize: 12 }}>Этап</Typography.Text>
+                  <Typography.Text type="secondary" style={{ width: 130, fontSize: 12 }}>Рабочих дней</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>Дата дедлайна</Typography.Text>
+                </div>
+                {sortedStages.map(stage => {
+                  const override = q.stage_deadlines.find(d => d.funnel_stage_id === stage.id);
+                  const days = override?.deadline_days ?? stage.deadline_days;
+                  const deadlineDate = q.start_date ? addBusinessDays(q.start_date, days) : null;
+                  return (
+                    <div key={stage.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <Typography.Text style={{ width: 220 }}>{stage.name}</Typography.Text>
+                      <InputNumber
+                        size="small"
+                        min={0}
+                        value={days}
+                        onChange={(v) => updateStageDeadline(qIdx, stage.id, v)}
+                        addonAfter="р.д."
+                        style={{ width: 130 }}
+                      />
+                      {deadlineDate
+                        ? <Typography.Text type="secondary">{deadlineDate}</Typography.Text>
+                        : <Typography.Text type="secondary">— укажите дату старта</Typography.Text>
+                      }
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </Card>
+        ))}
+        <Button type="dashed" icon={<PlusOutlined />} onClick={addQueue} style={{ marginTop: 8 }}>
+          Добавить очередь
+        </Button>
+      </Card>
     </div>
   );
 }

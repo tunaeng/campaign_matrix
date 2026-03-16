@@ -19,7 +19,8 @@ from .models import (
     ContractProgram, Quota, DemandImport, DemandImportSnapshot,
 )
 from .serializers import (
-    FederalDistrictSerializer, RegionSerializer, ProfessionSerializer,
+    FederalDistrictSerializer, FederalDistrictWithRegionsSerializer,
+    RegionSerializer, ProfessionSerializer,
     ProfessionDemandStatusSerializer, ProgramSerializer,
     FederalOperatorSerializer, ContractSerializer,
     ContractProgramSerializer, QuotaSerializer,
@@ -43,6 +44,13 @@ class FederalDistrictViewSet(viewsets.ReadOnlyModelViewSet):
         district = self.get_object()
         regions = district.regions.all()
         return Response(RegionSerializer(regions, many=True).data)
+
+    @action(detail=False, methods=["get"], url_path="with-regions")
+    def with_regions(self, request):
+        """Return all districts with nested regions (same shape as Bitrix API)."""
+        qs = FederalDistrict.objects.prefetch_related("regions").order_by("name")
+        serializer = FederalDistrictWithRegionsSerializer(qs, many=True)
+        return Response(serializer.data)
 
 
 class RegionViewSet(viewsets.ReadOnlyModelViewSet):
@@ -77,7 +85,9 @@ class ProgramViewSet(viewsets.ModelViewSet):
     )
     serializer_class = ProgramSerializer
     filterset_fields = ["profession", "is_active"]
-    search_fields = ["name", "profession__name"]
+    # search_fields intentionally omitted — we handle search manually below
+    # to support case-insensitive Cyrillic matching on SQLite (icontains
+    # in SQLite is only case-insensitive for ASCII).
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -103,6 +113,18 @@ class ProgramViewSet(viewsets.ModelViewSet):
             qs = qs.filter(
                 profession__demand_statuses__is_demanded=True,
             )
+
+        search = self.request.query_params.get("search", "").strip()
+        if search:
+            term = search.lower()
+            # SQLite's LOWER() only handles ASCII, so Cyrillic case-insensitive
+            # matching must be done in Python. Collect matching IDs first.
+            matching_ids = [
+                p.id for p in qs
+                if term in p.name.lower()
+                or (p.profession and term in p.profession.name.lower())
+            ]
+            qs = qs.filter(id__in=matching_ids)
 
         return qs.distinct()
 
