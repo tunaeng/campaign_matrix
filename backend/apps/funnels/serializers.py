@@ -63,6 +63,9 @@ class FunnelDetailSerializer(serializers.ModelSerializer):
 
 
 class FunnelCreateSerializer(serializers.ModelSerializer):
+    description = serializers.CharField(required=False, allow_blank=True, default="")
+    is_active = serializers.BooleanField(required=False, default=True)
+
     class Meta:
         model = Funnel
         fields = ["id", "name", "description", "is_active"]

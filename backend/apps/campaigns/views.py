@@ -1,4 +1,7 @@
 from django.utils import timezone
+from django.db.models import Sum, Value
+from django.db.models.functions import Coalesce
+from django.db.utils import OperationalError, ProgrammingError
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -7,7 +10,9 @@ from .models import (
     Campaign, CampaignQueue, CampaignProgram,
     CampaignRegion, CampaignOrganization,
     QueueStageDeadline, Lead, LeadChecklistValue, LeadInteraction,
+    LeadActivityLog,
 )
+from .db_compat import lead_table_has_quota_split_columns
 from .serializers import (
     CampaignListSerializer, CampaignDetailSerializer,
     CampaignCreateSerializer, CampaignQueueSerializer,
@@ -19,12 +24,81 @@ from .serializers import (
 )
 
 
+def _log_lead_activity(lead, user, event_type, summary):
+    if not summary:
+        return
+    try:
+        LeadActivityLog.objects.create(
+            lead=lead,
+            event_type=event_type,
+            summary=summary[:500],
+            created_by=user if getattr(user, "is_authenticated", False) else None,
+        )
+    except (OperationalError, ProgrammingError):
+        # Таблица ещё не создана (миграции не применены) — не блокируем основное действие
+        pass
+
+
+def _append_synthetic_checklist_from_values(lead, items):
+    """Добавляет в ленту отметки по чек-листу из completed_at, если в журнале нет той же записи."""
+    existing = set()
+    for it in items:
+        if it.get("kind") in ("checklist", "stage"):
+            existing.add((it.get("summary", ""), (it.get("at") or "")[:19]))
+
+    for cv in (
+        lead.checklist_values.select_related("checklist_item", "completed_by")
+        .filter(completed_at__isnull=False, is_completed=True)
+    ):
+        text = cv.checklist_item.text
+        summary = f"Отмечен пункт «{text}»"
+        at_str = cv.completed_at.isoformat()
+        sig = (summary, at_str[:19])
+        if sig in existing:
+            continue
+        existing.add(sig)
+        u = cv.completed_by
+        row = {
+            "kind": "checklist",
+            "id": 10_000_000 + cv.pk,
+            "at": at_str,
+            "summary": summary,
+            "created_by_name": str(u) if u else None,
+        }
+        if cv.contact_id:
+            row["contact_id"] = cv.contact_id
+        items.append(row)
+
+
+def _filter_timeline_items(items, kinds, contact_id):
+    """Фильтр ?kind=interaction,stage&contact=12 — по контакту только события, где он указан."""
+    if not kinds and contact_id is None:
+        return items
+    out = []
+    for it in items:
+        k = it.get("kind")
+        if kinds and k not in kinds:
+            continue
+        if contact_id is not None:
+            if k == "interaction":
+                cid = (it.get("data") or {}).get("contact")
+                if cid != contact_id:
+                    continue
+            elif k == "checklist":
+                if it.get("contact_id") != contact_id:
+                    continue
+            else:
+                continue
+        out.append(it)
+    return out
+
+
 class CampaignViewSet(viewsets.ModelViewSet):
     filterset_fields = ["status", "federal_operator"]
     search_fields = ["name"]
 
     def get_queryset(self):
-        return Campaign.objects.select_related(
+        qs = Campaign.objects.select_related(
             "federal_operator", "created_by"
         ).prefetch_related(
             "queues__stage_deadlines",
@@ -38,7 +112,20 @@ class CampaignViewSet(viewsets.ModelViewSet):
             "leads__current_stage",
             "leads__queue",
             "leads__manager",
+            "leads__primary_contact",
         )
+        if self.action == "list":
+            qs = qs.order_by("-created_at")
+            # Без колонок 0006 annotate даёт SQL error → 500 на проде при пропущенном migrate
+            if lead_table_has_quota_split_columns():
+                qs = qs.annotate(
+                    _d_plan=Coalesce(Sum("leads__forecast_demand"), Value(0)),
+                    _d_cd=Coalesce(Sum("leads__demand_collected_declared"), Value(0)),
+                    _d_cl=Coalesce(Sum("leads__demand_collected_list"), Value(0)),
+                    _d_qd=Coalesce(Sum("leads__demand_quota_declared"), Value(0)),
+                    _d_ql=Coalesce(Sum("leads__demand_quota_list"), Value(0)),
+                )
+        return qs
 
     def get_serializer_class(self):
         if self.action == "list":
@@ -204,7 +291,7 @@ class LeadViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return Lead.objects.select_related(
             "organization__region", "funnel", "current_stage",
-            "queue", "manager",
+            "queue", "manager", "primary_contact",
         ).prefetch_related(
             "checklist_values__checklist_item",
             "interactions",
@@ -244,7 +331,7 @@ class LeadViewSet(viewsets.ModelViewSet):
     def toggle_checklist(self, request, pk=None, value_id=None):
         lead = self.get_object()
         try:
-            value = lead.checklist_values.get(pk=value_id)
+            value = lead.checklist_values.select_related("checklist_item").get(pk=value_id)
         except LeadChecklistValue.DoesNotExist:
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -256,13 +343,19 @@ class LeadViewSet(viewsets.ModelViewSet):
             value.completed_at = None
             value.completed_by = None
         value.save()
+        item_text = value.checklist_item.text
+        if value.is_completed:
+            summary = f"Отмечен пункт «{item_text}»"
+        else:
+            summary = f"Снята отметка с пункта «{item_text}»"
+        _log_lead_activity(lead, request.user, LeadActivityLog.EventType.CHECKLIST, summary)
         return Response(LeadChecklistValueSerializer(value).data)
 
     @action(detail=True, methods=["patch"], url_path="checklist/(?P<value_id>[^/.]+)/update")
     def update_checklist_value(self, request, pk=None, value_id=None):
         lead = self.get_object()
         try:
-            value = lead.checklist_values.get(pk=value_id)
+            value = lead.checklist_values.select_related("checklist_item").get(pk=value_id)
         except LeadChecklistValue.DoesNotExist:
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -271,10 +364,42 @@ class LeadViewSet(viewsets.ModelViewSet):
             "contact_name", "contact_position", "contact_phone",
             "contact_email", "contact_messenger",
         ]
+        field_labels = {
+            "text_value": "текст",
+            "select_value": "выбор",
+            "contact_name": "ФИО",
+            "contact_position": "должность",
+            "contact_phone": "телефон",
+            "contact_email": "email",
+            "contact_messenger": "мессенджер",
+        }
+        old_snapshot = {f: getattr(value, f) for f in updatable}
+        old_contact_id = value.contact_id
         for field in updatable:
             if field in request.data:
                 setattr(value, field, request.data[field])
+        if "contact" in request.data:
+            cid = request.data["contact"]
+            value.contact_id = int(cid) if cid is not None and cid != "" else None
         value.save()
+
+        changed_labels = []
+        for field in updatable:
+            if field in request.data and old_snapshot[field] != getattr(value, field):
+                changed_labels.append(field_labels.get(field, field))
+        if "contact" in request.data:
+            new_cid = value.contact_id
+            if old_contact_id != new_cid:
+                changed_labels.append("контакт из справочника")
+        if changed_labels:
+            item_text = value.checklist_item.text
+            parts = ", ".join(sorted(set(changed_labels)))
+            _log_lead_activity(
+                lead,
+                request.user,
+                LeadActivityLog.EventType.CHECKLIST,
+                f"«{item_text}»: {parts}",
+            )
         return Response(LeadChecklistValueSerializer(value).data)
 
     @action(detail=True, methods=["get", "post"], url_path="interactions")
@@ -292,9 +417,56 @@ class LeadViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=["get"], url_path="timeline")
+    def timeline(self, request, pk=None):
+        """Единая лента: взаимодействия + смена стадий + чек-лист (по дате)."""
+        lead = self.get_object()
+        items = []
+        for i in lead.interactions.select_related("created_by").order_by("-date", "-created_at"):
+            dt = i.date or i.created_at
+            at_str = dt.isoformat() if dt and hasattr(dt, "isoformat") else (str(dt) if dt else "")
+            items.append({
+                "kind": "interaction",
+                "id": i.pk,
+                "at": at_str,
+                "data": LeadInteractionSerializer(i).data,
+            })
+        try:
+            activity_qs = list(
+                lead.activity_logs.select_related("created_by").all()
+            )
+        except (OperationalError, ProgrammingError):
+            activity_qs = []
+        for log in activity_qs:
+            user = log.created_by
+            items.append({
+                "kind": log.event_type,
+                "id": log.pk,
+                "at": log.created_at.isoformat(),
+                "summary": log.summary,
+                "created_by_name": str(user) if user else None,
+            })
+        _append_synthetic_checklist_from_values(lead, items)
+        items.sort(key=lambda x: x["at"] or "", reverse=True)
+
+        kinds_raw = request.query_params.get("kind", "").strip()
+        kinds = None
+        if kinds_raw:
+            kinds = {x.strip() for x in kinds_raw.split(",") if x.strip()}
+        contact_param = request.query_params.get("contact")
+        contact_id = None
+        if contact_param not in (None, ""):
+            try:
+                contact_id = int(contact_param)
+            except (TypeError, ValueError):
+                contact_id = None
+        items = _filter_timeline_items(items, kinds, contact_id)
+        return Response(items)
+
     @action(detail=True, methods=["post"], url_path="advance-stage")
     def advance_stage(self, request, pk=None):
         lead = self.get_object()
+        old_stage = lead.current_stage
         normal_stages = list(
             lead.funnel.stages.filter(is_rejection=False).order_by("order")
         )
@@ -318,6 +490,52 @@ class LeadViewSet(viewsets.ModelViewSet):
 
         lead.save(update_fields=["current_stage", "updated_at"])
         self._ensure_checklist_values(lead, lead.current_stage)
+        old_name = old_stage.name if old_stage else "—"
+        new_name = lead.current_stage.name if lead.current_stage else "—"
+        _log_lead_activity(
+            lead,
+            request.user,
+            LeadActivityLog.EventType.STAGE,
+            f"{old_name} → {new_name}",
+        )
+        return Response(LeadDetailSerializer(lead).data)
+
+    @action(detail=True, methods=["post"], url_path="retreat-stage")
+    def retreat_stage(self, request, pk=None):
+        lead = self.get_object()
+        normal_stages = list(
+            lead.funnel.stages.filter(is_rejection=False).order_by("order")
+        )
+        if not normal_stages:
+            return Response({"detail": "No stages in funnel"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if lead.current_stage is None or lead.current_stage.is_rejection:
+            return Response(
+                {"detail": "No current stage to retreat from"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        current_idx = next(
+            (i for i, s in enumerate(normal_stages) if s.id == lead.current_stage_id),
+            -1,
+        )
+        if current_idx <= 0:
+            return Response(
+                {"detail": "Already at first stage"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        old_stage = lead.current_stage
+        lead.current_stage = normal_stages[current_idx - 1]
+        lead.save(update_fields=["current_stage", "updated_at"])
+        old_name = old_stage.name if old_stage else "—"
+        new_name = lead.current_stage.name if lead.current_stage else "—"
+        _log_lead_activity(
+            lead,
+            request.user,
+            LeadActivityLog.EventType.STAGE,
+            f"{old_name} → {new_name}",
+        )
         return Response(LeadDetailSerializer(lead).data)
 
     @action(detail=True, methods=["post"], url_path="reject")
@@ -329,9 +547,17 @@ class LeadViewSet(viewsets.ModelViewSet):
                 {"detail": "No rejection stage in funnel"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        old_stage = lead.current_stage
         lead.current_stage = rejection_stage
         lead.save(update_fields=["current_stage", "updated_at"])
         self._ensure_checklist_values(lead, lead.current_stage)
+        old_name = old_stage.name if old_stage else "—"
+        _log_lead_activity(
+            lead,
+            request.user,
+            LeadActivityLog.EventType.STAGE,
+            f"{old_name} → Отказ",
+        )
         return Response(LeadDetailSerializer(lead).data)
 
     @staticmethod

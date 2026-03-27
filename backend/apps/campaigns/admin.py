@@ -35,7 +35,7 @@ class CampaignFunnelInline(admin.TabularInline):
 class LeadInline(admin.TabularInline):
     model = Lead
     extra = 0
-    fields = ["organization", "funnel", "queue", "current_stage", "manager"]
+    fields = ["organization", "funnel", "queue", "current_stage", "manager", "primary_contact"]
 
 
 @admin.register(Campaign)
@@ -75,6 +75,6 @@ class LeadInteractionInline(admin.TabularInline):
 
 @admin.register(Lead)
 class LeadAdmin(admin.ModelAdmin):
-    list_display = ["organization", "campaign", "funnel", "current_stage", "manager"]
+    list_display = ["organization", "campaign", "funnel", "current_stage", "manager", "primary_contact"]
     list_filter = ["campaign", "funnel"]
     inlines = [LeadChecklistValueInline, LeadInteractionInline]
