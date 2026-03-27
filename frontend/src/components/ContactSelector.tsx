@@ -64,7 +64,8 @@ export default function ContactSelector({
   }, [contacts]);
 
   const handleSelect = (contactId: number | null) => {
-    onChange?.(contactId);
+    const contact = contactId ? contacts?.find((c) => c.id === contactId) : undefined;
+    onChange?.(contactId, contact);
     if (contactId && onContactDetails) {
       const c = contacts?.find(c => c.id === contactId);
       if (c) {

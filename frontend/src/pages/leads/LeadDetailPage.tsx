@@ -1,21 +1,25 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Typography, Button, Space, Spin, Steps, Tag, Checkbox,
   Input, Upload, Select, Form, Modal, Timeline, Descriptions, App, Progress,
-  DatePicker, Popconfirm, Segmented,
+  DatePicker, Popconfirm, Segmented, InputNumber, Row, Col,
 } from 'antd';
 import {
-  ArrowLeftOutlined, PlusOutlined, UploadOutlined, StopOutlined, UserOutlined,
+  ArrowLeftOutlined, PlusOutlined, UploadOutlined, StopOutlined, UserOutlined, RollbackOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
-  useLead, useToggleChecklistItem, useCreateChecklistValue,
+  useLead, useUpdateLead, useToggleChecklistItem, useCreateChecklistValue,
   useUpdateChecklistValue,
-  useCreateLeadInteraction, useAdvanceLeadStage, useRejectLead, useLeadInteractions,
+  useCreateLeadInteraction, useAdvanceLeadStage, useRetreatLeadStage, useRejectLead, useLeadTimeline,
+  useContactsByOrganization,
 } from '../../api/hooks';
+import type { LeadTimelineItem } from '../../types';
 import type { LeadChecklistValue, LeadStageDeadline } from '../../types';
 import ContactSelector from '../../components/ContactSelector';
+import LeadContactsTab from './LeadContactsTab';
+import DemandQuotaPreview, { leadToDemandBreakdown } from '../../components/DemandQuotaPreview';
 
 const channelOptions = [
   { value: 'email', label: 'Email' },
@@ -31,12 +35,33 @@ export default function LeadDetailPage() {
   const { campaignId, leadId } = useParams<{ campaignId: string; leadId: string }>();
   const navigate = useNavigate();
   const { data: lead, isLoading } = useLead(leadId!);
-  const { data: interactions } = useLeadInteractions(leadId!);
+  const updateLead = useUpdateLead(leadId!);
+  const [demandModalOpen, setDemandModalOpen] = useState(false);
+  const [demandForm] = Form.useForm();
+  const [historyKind, setHistoryKind] = useState<string>('');
+  const [historyContactId, setHistoryContactId] = useState<number | null>(null);
+  const [leadWorkPanel, setLeadWorkPanel] = useState<'checklist' | 'contacts'>('checklist');
+  const { data: contactsForHistory, isLoading: loadingOrgContacts } = useContactsByOrganization(lead?.organization_name);
+  const historyContactOptions = useMemo(() => {
+    if (!contactsForHistory?.length) return [];
+    return contactsForHistory.map((c) => ({
+      value: c.id,
+      label: c.type === 'person'
+        ? `${c.full_name}${c.position ? ` — ${c.position}` : ''}`
+        : `[${c.type_display}] ${c.department_name || c.full_name}`,
+    }));
+  }, [contactsForHistory]);
+
+  const { data: timeline } = useLeadTimeline(leadId!, {
+    kind: historyKind || undefined,
+    contact: historyContactId,
+  });
   const toggleItem = useToggleChecklistItem(leadId!);
   const createValue = useCreateChecklistValue(leadId!);
   const updateValue = useUpdateChecklistValue(leadId!);
   const createInteraction = useCreateLeadInteraction(leadId!);
   const advanceStage = useAdvanceLeadStage(leadId!);
+  const retreatStage = useRetreatLeadStage(leadId!);
   const rejectLead = useRejectLead(leadId!);
 
   const [interactionModalOpen, setInteractionModalOpen] = useState(false);
@@ -62,8 +87,25 @@ export default function LeadDetailPage() {
   const allChecklistForCurrentStage = lead.current_stage
     ? (lead.checklist_values || []).filter(v => v.stage_id === lead.current_stage)
     : [];
-  const completedCount = allChecklistForCurrentStage.filter(v => v.is_completed).length;
-  const totalCount = allChecklistForCurrentStage.length;
+
+  const currentStageDeadline = normalStages.find((s) => s.stage_id === lead.current_stage);
+  const currentOrder = currentStageDeadline?.order;
+
+  const stagesToShowChronological =
+    !isRejected && currentOrder != null
+      ? [...normalStages]
+        .filter((sd) => sd.order <= currentOrder)
+        .sort((a, b) => a.order - b.order)
+      : [];
+
+  const visibleChecklistItems = isRejected
+    ? allChecklistForCurrentStage
+    : stagesToShowChronological.flatMap((sd) =>
+        (lead.checklist_values || []).filter((v) => v.stage_id === sd.stage_id),
+      );
+
+  const completedCount = visibleChecklistItems.filter((v) => v.is_completed).length;
+  const totalCount = visibleChecklistItems.length;
 
   const handleToggle = async (value: LeadChecklistValue) => {
     try {
@@ -89,6 +131,31 @@ export default function LeadDetailPage() {
     } catch (err: any) {
       message.error(err.response?.data?.detail || 'Ошибка');
     }
+  };
+
+  const handleRetreat = async () => {
+    try {
+      await retreatStage.mutateAsync();
+      message.success('Возврат на предыдущую стадию');
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || 'Ошибка');
+    }
+  };
+
+  const handleSaveDemand = async () => {
+    try {
+      const v = await demandForm.validateFields();
+      await updateLead.mutateAsync({
+        forecast_demand: v.forecast_demand ?? null,
+        demand_quota_declared: v.demand_quota_declared ?? 0,
+        demand_quota_list: v.demand_quota_list ?? 0,
+        demand_collected_declared: v.demand_collected_declared ?? 0,
+        demand_collected_list: v.demand_collected_list ?? 0,
+        demand_count: v.demand_count ?? 0,
+      });
+      message.success('Потребность сохранена');
+      setDemandModalOpen(false);
+    } catch { /* validation */ }
   };
 
   const handleCreateInteraction = async () => {
@@ -123,7 +190,37 @@ export default function LeadDetailPage() {
     }
   };
 
-  const renderConfirmationField = (value: LeadChecklistValue) => {
+  const renderConfirmationField = (value: LeadChecklistValue, readOnly = false) => {
+    if (readOnly) {
+      switch (value.confirmation_type) {
+        case 'text':
+          return (
+            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+              {value.text_value?.trim() ? value.text_value : '—'}
+            </Typography.Text>
+          );
+        case 'file':
+          return value.file_value ? (
+            <a href={value.file_value} target="_blank" rel="noopener noreferrer" style={{ marginLeft: 8 }}>
+              Файл
+            </a>
+          ) : (
+            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>—</Typography.Text>
+          );
+        case 'select':
+          return (
+            <Tag style={{ marginLeft: 8 }}>{value.select_value || '—'}</Tag>
+          );
+        case 'contact':
+          return (
+            <Typography.Text style={{ marginLeft: 8 }}>
+              {value.contact_full_name || value.contact_name || '—'}
+            </Typography.Text>
+          );
+        default:
+          return null;
+      }
+    }
     switch (value.confirmation_type) {
       case 'text':
         return (
@@ -194,7 +291,96 @@ export default function LeadDetailPage() {
     }
   };
 
-  const interactionsList = interactions || lead.interactions || [];
+  const renderChecklistItem = (value: LeadChecklistValue, readOnly: boolean) => (
+    <div
+      key={value.id}
+      style={{
+        padding: '10px 0',
+        borderBottom: '1px solid #f5f5f5',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        <Checkbox
+          checked={value.is_completed}
+          disabled={readOnly}
+          onChange={() => handleToggle(value)}
+        >
+          {value.checklist_item_text}
+        </Checkbox>
+      </div>
+      {value.confirmation_type && value.confirmation_type !== 'none' && (
+        <div style={{ marginLeft: 24, marginTop: 6, display: 'flex', alignItems: 'center' }}>
+          {renderConfirmationField(value, readOnly)}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderTimelineEntry = (item: LeadTimelineItem) => {
+    const when = new Date(item.at).toLocaleString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    if (item.kind === 'interaction') {
+      const i = item.data;
+      return (
+        <div>
+          <Space wrap>
+            <Tag color="blue">Взаимодействие</Tag>
+            <Typography.Text strong>{i.contact_person}</Typography.Text>
+            {i.contact_position && (
+              <Typography.Text type="secondary">({i.contact_position})</Typography.Text>
+            )}
+            <Tag>{i.channel_display}</Tag>
+            <Typography.Text type="secondary">{when}</Typography.Text>
+          </Space>
+          {i.result && (
+            <Typography.Paragraph style={{ marginTop: 4, marginBottom: 0 }}>
+              {i.result}
+            </Typography.Paragraph>
+          )}
+          {i.created_by_name && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              — {i.created_by_name}
+            </Typography.Text>
+          )}
+        </div>
+      );
+    }
+    if (item.kind === 'stage') {
+      return (
+        <div>
+          <Space wrap>
+            <Tag color="purple">Стадия</Tag>
+            <Typography.Text>{item.summary}</Typography.Text>
+            <Typography.Text type="secondary">{when}</Typography.Text>
+          </Space>
+          {item.created_by_name && (
+            <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+              {item.created_by_name}
+            </Typography.Text>
+          )}
+        </div>
+      );
+    }
+    return (
+      <div>
+        <Space wrap>
+          <Tag color="green">Чек-лист</Tag>
+          <Typography.Text>{item.summary}</Typography.Text>
+          <Typography.Text type="secondary">{when}</Typography.Text>
+        </Space>
+        {item.created_by_name && (
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+            {item.created_by_name}
+          </Typography.Text>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -227,12 +413,86 @@ export default function LeadDetailPage() {
           </div>
         </div>
 
-        <Descriptions column={3} style={{ marginTop: 16 }} size="small">
+        <Descriptions column={1} style={{ marginTop: 16 }} size="small">
           <Descriptions.Item label="Регион">{lead.organization_region || '—'}</Descriptions.Item>
-          <Descriptions.Item label="Прогноз потребности">{lead.forecast_demand ?? '—'}</Descriptions.Item>
-          <Descriptions.Item label="Факт. потребность">{lead.demand_count}</Descriptions.Item>
         </Descriptions>
+        <div style={{ marginTop: 8 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+            План и квоты (чел.)
+          </Typography.Text>
+          <DemandQuotaPreview breakdown={leadToDemandBreakdown(lead)} />
+          <Button
+            type="link"
+            size="small"
+            style={{ paddingLeft: 0, marginTop: 4 }}
+            onClick={() => {
+              demandForm.setFieldsValue({
+                forecast_demand: lead.forecast_demand,
+                demand_quota_declared: lead.demand_quota_declared ?? 0,
+                demand_quota_list: lead.demand_quota_list ?? 0,
+                demand_collected_declared: lead.demand_collected_declared ?? 0,
+                demand_collected_list: lead.demand_collected_list ?? 0,
+                demand_count: lead.demand_count,
+              });
+              setDemandModalOpen(true);
+            }}
+          >
+            Изменить
+          </Button>
+        </div>
       </Card>
+
+      <Modal
+        title="План, квоты и собрано"
+        open={demandModalOpen}
+        onOk={handleSaveDemand}
+        onCancel={() => setDemandModalOpen(false)}
+        okText="Сохранить"
+        confirmLoading={updateLead.isPending}
+        width={560}
+        destroyOnClose
+      >
+        <Form form={demandForm} layout="vertical">
+          <Row gutter={12}>
+            <Col span={12}>
+              <Form.Item name="forecast_demand" label="План (прогноз)">
+                <InputNumber min={0} style={{ width: '100%' }} placeholder="чел." />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="demand_count" label="Факт. потребность (наслед.)">
+                <InputNumber min={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Typography.Text strong>Квота</Typography.Text>
+          <Row gutter={12} style={{ marginTop: 8 }}>
+            <Col span={12}>
+              <Form.Item name="demand_quota_declared" label="Заявленная">
+                <InputNumber min={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="demand_quota_list" label="Списочная">
+                <InputNumber min={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Typography.Text strong>Собрано</Typography.Text>
+          <Row gutter={12} style={{ marginTop: 8 }}>
+            <Col span={12}>
+              <Form.Item name="demand_collected_declared" label="По заявленной квоте">
+                <InputNumber min={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="demand_collected_list" label="По списочной квоте">
+                <InputNumber min={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
+      </Modal>
 
       {stageItems.length > 0 && (
         <Card title="Прогресс стадий" style={{ marginBottom: 16 }}>
@@ -248,7 +508,23 @@ export default function LeadDetailPage() {
             size="small"
           />
           <div style={{ marginTop: 16, textAlign: 'right' }}>
-            <Space>
+            <Space wrap>
+              {!isRejected && currentStageIdx > 0 && (
+                <Popconfirm
+                  title="Вернуться на предыдущую стадию?"
+                  description="Текущая стадия изменится; отмеченные пункты сохранятся."
+                  onConfirm={handleRetreat}
+                  okText="Да"
+                  cancelText="Нет"
+                >
+                  <Button
+                    icon={<RollbackOutlined />}
+                    loading={retreatStage.isPending}
+                  >
+                    Шаг назад
+                  </Button>
+                </Popconfirm>
+              )}
               {!isRejected && !isLastNormalStage && (
                 <Button
                   type="primary"
@@ -289,47 +565,88 @@ export default function LeadDetailPage() {
         </Card>
       )}
 
-      <Card title="Чек-лист" style={{ marginBottom: 16 }}>
-        {totalCount > 0 && (
-          <Progress
-            percent={totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0}
-            style={{ marginBottom: 16 }}
-            format={() => `${completedCount}/${totalCount}`}
+      <Card
+        title={leadWorkPanel === 'checklist' ? 'Чек-лист' : 'Контакты организации'}
+        extra={
+          <Segmented
+            value={leadWorkPanel}
+            onChange={(v) => setLeadWorkPanel(v as 'checklist' | 'contacts')}
+            options={[
+              { label: 'Чек-лист', value: 'checklist' },
+              { label: 'Контакты', value: 'contacts' },
+            ]}
           />
-        )}
-        {allChecklistForCurrentStage.length === 0 ? (
-          <Typography.Text type="secondary">
-            Нет пунктов чек-листа для текущей стадии
-          </Typography.Text>
+        }
+        style={{ marginBottom: 16 }}
+      >
+        {leadWorkPanel === 'contacts' ? (
+          <LeadContactsTab
+            leadId={lead.id}
+            organizationId={lead.organization}
+            organizationName={lead.organization_name}
+            contacts={contactsForHistory}
+            loading={loadingOrgContacts}
+            primaryContactId={lead.primary_contact?.id ?? null}
+          />
         ) : (
-          allChecklistForCurrentStage.map((value) => (
-            <div
-              key={value.id}
-              style={{
-                padding: '10px 0',
-                borderBottom: '1px solid #f5f5f5',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center' }}>
-                <Checkbox
-                  checked={value.is_completed}
-                  onChange={() => handleToggle(value)}
-                >
-                  {value.checklist_item_text}
-                </Checkbox>
+          <>
+            {totalCount > 0 && (
+              <Progress
+                percent={totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0}
+                style={{ marginBottom: 16 }}
+                format={() => `${completedCount}/${totalCount}`}
+              />
+            )}
+            {isRejected && (
+              <>
+                {allChecklistForCurrentStage.length === 0 ? (
+                  <Typography.Text type="secondary">
+                    Нет пунктов чек-листа для текущей стадии
+                  </Typography.Text>
+                ) : (
+                  allChecklistForCurrentStage.map((value) => renderChecklistItem(value, false))
+                )}
+              </>
+            )}
+            {!isRejected && stagesToShowChronological.length === 0 && (
+              <Typography.Text type="secondary">
+                Нет пунктов чек-листа для текущей стадии
+              </Typography.Text>
+            )}
+            {!isRejected && stagesToShowChronological.length > 0 && totalCount === 0 && (
+              <Typography.Text type="secondary">
+                Нет пунктов чек-листа для доступных стадий
+              </Typography.Text>
+            )}
+            {!isRejected && stagesToShowChronological.length > 0 && totalCount > 0 && (
+              <div>
+                {stagesToShowChronological.map((sd) => {
+                  const items = (lead.checklist_values || []).filter((v) => v.stage_id === sd.stage_id);
+                  const isPastStage = sd.stage_id !== lead.current_stage;
+                  if (items.length === 0) return null;
+                  return (
+                    <div key={sd.stage_id} style={{ marginBottom: 20 }}>
+                      <Space align="center" style={{ marginBottom: 8 }}>
+                        <Typography.Text strong>{sd.stage_name}</Typography.Text>
+                        {!isPastStage && (
+                          <Tag color="processing">текущая</Tag>
+                        )}
+                        {isPastStage && (
+                          <Tag>пройдено</Tag>
+                        )}
+                      </Space>
+                      {items.map((value) => renderChecklistItem(value, isPastStage))}
+                    </div>
+                  );
+                })}
               </div>
-              {value.confirmation_type && value.confirmation_type !== 'none' && (
-                <div style={{ marginLeft: 24, marginTop: 6, display: 'flex', alignItems: 'center' }}>
-                  {renderConfirmationField(value)}
-                </div>
-              )}
-            </div>
-          ))
+            )}
+          </>
         )}
       </Card>
 
       <Card
-        title="История взаимодействий"
+        title="История: взаимодействия и изменения"
         extra={
           <Button
             type="primary" size="small" icon={<PlusOutlined />}
@@ -338,39 +655,43 @@ export default function LeadDetailPage() {
               setInteractionModalOpen(true);
             }}
           >
-            Добавить
+            Добавить взаимодействие
           </Button>
         }
       >
-        {interactionsList.length === 0 ? (
+        <Space wrap style={{ marginBottom: 16 }} align="center">
+          <Typography.Text type="secondary">Фильтр:</Typography.Text>
+          <Select
+            allowClear
+            placeholder="Все типы"
+            style={{ minWidth: 160 }}
+            value={historyKind || undefined}
+            onChange={(v) => setHistoryKind(v ?? '')}
+            options={[
+              { value: 'interaction', label: 'Взаимодействие' },
+              { value: 'stage', label: 'Стадия' },
+              { value: 'checklist', label: 'Чек-лист' },
+            ]}
+          />
+          <Select
+            allowClear
+            placeholder="Все контакты"
+            style={{ minWidth: 260 }}
+            showSearch
+            optionFilterProp="label"
+            value={historyContactId ?? undefined}
+            onChange={(v) => setHistoryContactId(typeof v === 'number' ? v : null)}
+            options={historyContactOptions}
+            disabled={!lead.organization_name}
+          />
+        </Space>
+        {!timeline || timeline.length === 0 ? (
           <Typography.Text type="secondary">Нет записей</Typography.Text>
         ) : (
           <Timeline
-            items={interactionsList.map((i) => ({
-              children: (
-                <div>
-                  <Space>
-                    <Typography.Text strong>{i.contact_person}</Typography.Text>
-                    {i.contact_position && (
-                      <Typography.Text type="secondary">({i.contact_position})</Typography.Text>
-                    )}
-                    <Tag>{i.channel_display}</Tag>
-                    <Typography.Text type="secondary">
-                      {new Date(i.date).toLocaleDateString('ru-RU')}
-                    </Typography.Text>
-                  </Space>
-                  {i.result && (
-                    <Typography.Paragraph style={{ marginTop: 4, marginBottom: 0 }}>
-                      {i.result}
-                    </Typography.Paragraph>
-                  )}
-                  {i.created_by_name && (
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      — {i.created_by_name}
-                    </Typography.Text>
-                  )}
-                </div>
-              ),
+            items={timeline.map((item) => ({
+              key: `${item.kind}-${item.id}`,
+              children: renderTimelineEntry(item),
             }))}
           />
         )}
