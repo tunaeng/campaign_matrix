@@ -4,6 +4,14 @@ from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# manage.py / gunicorn не подхватывают .env сами — без этого DB_* из backend/.env игнорируются → часто SQLite вместо Postgres
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(BASE_DIR / ".env", override=False)
+except ImportError:
+    pass
+
 SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY",
     "django-insecure-dev-key-change-in-production-x9k2m3n4",
@@ -64,16 +72,19 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-DB_ENGINE = os.environ.get("DB_ENGINE", "django.db.backends.sqlite3")
+# База: по умолчанию SQLite. Частая ошибка — в .env указаны DB_NAME/DB_HOST, но не DB_ENGINE:
+# тогда раньше всегда брался SQLite и migrate писал в db.sqlite3, а gunicorn с DB_ENGINE=postgres — в другую БД.
+_engine = (os.environ.get("DB_ENGINE") or "").strip().lower()
+_db_host = (os.environ.get("DB_HOST") or "").strip()
 
-if "sqlite" in DB_ENGINE:
+if _engine and "sqlite" in _engine:
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
-else:
+elif _engine and "postgres" in _engine:
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",
@@ -82,6 +93,25 @@ else:
             "PASSWORD": os.environ.get("DB_PASSWORD", "postgres"),
             "HOST": os.environ.get("DB_HOST", "localhost"),
             "PORT": os.environ.get("DB_PORT", "5432"),
+        }
+    }
+elif _db_host:
+    # Задан хост БД без явного DB_ENGINE — считаем, что нужен PostgreSQL (как в .env.example)
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ.get("DB_NAME", "campaigns_matrix"),
+            "USER": os.environ.get("DB_USER", "postgres"),
+            "PASSWORD": os.environ.get("DB_PASSWORD", "postgres"),
+            "HOST": _db_host,
+            "PORT": os.environ.get("DB_PORT", "5432"),
+        }
+    }
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
         }
     }
 
