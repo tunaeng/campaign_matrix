@@ -47,3 +47,102 @@ body {
   overflow: visible !important;
   min-width: 100%;
 }
+
+/* Чек-лист лида: TipTap */
+/* Ручка resize на корне: на внутреннем блоке с width: stretch от flex часто не работает горизонтальное растягивание в Chrome. */
+.checklist-rich-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  resize: both;
+  overflow: hidden;
+  min-height: 280px;
+  max-height: min(85vh, 720px);
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  background: #fff;
+}
+.checklist-rich-editor__toolbar {
+  flex-shrink: 0;
+  padding: 6px 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.checklist-rich-editor__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 120px;
+  overflow: auto;
+  box-sizing: border-box;
+}
+.checklist-rich-editor__body > div {
+  min-height: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.checklist-editor__prose {
+  flex: 1;
+  min-height: 0;
+  outline: none;
+  /* Запас слева: маркеры списков при outside обрезались у границы overflow */
+  padding: 8px 12px 8px 24px;
+  box-sizing: border-box;
+}
+.checklist-editor__prose .ProseMirror {
+  min-height: 100%;
+  outline: none;
+}
+.checklist-editor__prose .ProseMirror p {
+  margin: 0.35em 0;
+}
+/* TipTap кладёт в li блочный <p>; при list-style-position:inside маркер и текст на разных строках */
+.checklist-editor__prose ul,
+.checklist-editor__prose ol,
+.checklist-editor__prose .ProseMirror ul,
+.checklist-editor__prose .ProseMirror ol {
+  margin: 0.35em 0;
+  margin-left: 0;
+  padding-left: 1.75em;
+  padding-inline-start: 1.75em;
+  list-style-position: outside;
+}
+.checklist-editor__prose .ProseMirror li > p {
+  margin: 0;
+}
+.checklist-editor__prose .ProseMirror li > p + p {
+  margin-top: 0.35em;
+}
+.checklist-editor__prose li {
+  margin: 0.15em 0;
+}
+.checklist-rich-html {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.checklist-rich-html p {
+  margin: 0.35em 0;
+}
+.checklist-rich-html ul,
+.checklist-rich-html ol {
+  margin: 0.35em 0;
+  margin-left: 0;
+  padding-left: 1.75em;
+  padding-inline-start: 1.75em;
+  list-style-position: outside;
+}
+.checklist-rich-html li > p {
+  margin: 0;
+}
+.checklist-rich-html li > p + p {
+  margin-top: 0.35em;
+}
+.checklist-rich-html li {
+  margin: 0.15em 0;
+}

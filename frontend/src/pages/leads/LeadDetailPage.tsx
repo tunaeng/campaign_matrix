@@ -21,6 +21,8 @@ import {
 import type { LeadTimelineItem } from '../../types';
 import type { LeadChecklistValue, LeadStageDeadline } from '../../types';
 import ContactSelector from '../../components/ContactSelector';
+import ChecklistRichTextEditor from '../../components/ChecklistRichTextEditor';
+import ChecklistRichTextHtml from '../../components/ChecklistRichTextHtml';
 import LeadContactsTab from './LeadContactsTab';
 import DemandQuotaPreview, { leadToDemandBreakdown } from '../../components/DemandQuotaPreview';
 
@@ -51,6 +53,8 @@ export default function LeadDetailPage() {
   const [historyKind, setHistoryKind] = useState<string>('');
   const [historyContactId, setHistoryContactId] = useState<number | null>(null);
   const [leadWorkPanel, setLeadWorkPanel] = useState<'checklist' | 'contacts'>('checklist');
+  /** По умолчанию скрыты блоки чек-листа по пройденным стадиям; только текущий период. */
+  const [showPastChecklistStages, setShowPastChecklistStages] = useState(false);
   const { data: contactsForHistory, isLoading: loadingOrgContacts } = useContactsByOrganization(lead?.organization_name);
   const historyContactOptions = useMemo(() => {
     if (!contactsForHistory?.length) return [];
@@ -110,11 +114,26 @@ export default function LeadDetailPage() {
         .sort((a, b) => a.order - b.order)
       : [];
 
+  const hasPastChecklistStages =
+    !isRejected &&
+    stagesToShowChronological.some((sd) => sd.stage_id !== lead.current_stage);
+
+  const stagesForChecklistView =
+    !isRejected && !showPastChecklistStages
+      ? stagesToShowChronological.filter((sd) => sd.stage_id === lead.current_stage)
+      : stagesToShowChronological;
+
   const visibleChecklistItems = isRejected
     ? allChecklistForCurrentStage
-    : stagesToShowChronological.flatMap((sd) =>
+    : stagesForChecklistView.flatMap((sd) =>
         (lead.checklist_values || []).filter((v) => v.stage_id === sd.stage_id),
       );
+
+  const totalCountAllChronologicalStages = isRejected
+    ? allChecklistForCurrentStage.length
+    : stagesToShowChronological.flatMap((sd) =>
+        (lead.checklist_values || []).filter((v) => v.stage_id === sd.stage_id),
+      ).length;
 
   const completedCount = visibleChecklistItems.filter((v) => v.is_completed).length;
   const totalCount = visibleChecklistItems.length;
@@ -219,9 +238,7 @@ export default function LeadDetailPage() {
       switch (type) {
         case 'text':
           return (
-            <Typography.Text type="secondary">
-              {value.text_value?.trim() ? value.text_value : '—'}
-            </Typography.Text>
+            <ChecklistRichTextHtml html={value.text_value || ''} />
           );
         case 'file': {
           const filesList = resolveChecklistFiles(value);
@@ -257,13 +274,9 @@ export default function LeadDetailPage() {
     switch (type) {
       case 'text':
         return (
-          <Input
-            size="small"
-            style={{ flex: 1, maxWidth: 400 }}
-            placeholder="Введите текст подтверждения"
-            defaultValue={value.text_value}
-            onBlur={(e) => handleUpdateField(value.id, 'text_value', e.target.value)}
-            onPressEnter={(e) => handleUpdateField(value.id, 'text_value', (e.target as HTMLInputElement).value)}
+          <ChecklistRichTextEditor
+            value={value.text_value || ''}
+            onSave={(html) => handleUpdateField(value.id, 'text_value', html)}
           />
         );
       case 'file': {
@@ -689,6 +702,17 @@ export default function LeadDetailPage() {
                 format={() => `${completedCount}/${totalCount}`}
               />
             )}
+            {!isRejected && hasPastChecklistStages && (
+              <div style={{ marginBottom: 12 }}>
+                <Button
+                  type="link"
+                  onClick={() => setShowPastChecklistStages((v) => !v)}
+                  style={{ paddingLeft: 0 }}
+                >
+                  {showPastChecklistStages ? 'Скрыть предыдущие периоды' : 'Показать предыдущие периоды'}
+                </Button>
+              </div>
+            )}
             {isRejected && (
               <>
                 {allChecklistForCurrentStage.length === 0 ? (
@@ -705,14 +729,19 @@ export default function LeadDetailPage() {
                 Нет пунктов чек-листа для текущей стадии
               </Typography.Text>
             )}
-            {!isRejected && stagesToShowChronological.length > 0 && totalCount === 0 && (
+            {!isRejected && stagesToShowChronological.length > 0 && totalCount === 0 && totalCountAllChronologicalStages === 0 && (
               <Typography.Text type="secondary">
                 Нет пунктов чек-листа для доступных стадий
               </Typography.Text>
             )}
+            {!isRejected && stagesToShowChronological.length > 0 && totalCount === 0 && totalCountAllChronologicalStages > 0 && !showPastChecklistStages && (
+              <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+                На текущей стадии нет пунктов чек-листа. Блоки за предыдущие периоды скрыты — нажмите «Показать предыдущие периоды» выше.
+              </Typography.Text>
+            )}
             {!isRejected && stagesToShowChronological.length > 0 && totalCount > 0 && (
               <div>
-                {stagesToShowChronological.map((sd) => {
+                {stagesForChecklistView.map((sd) => {
                   const items = (lead.checklist_values || []).filter((v) => v.stage_id === sd.stage_id);
                   const isPastStage = sd.stage_id !== lead.current_stage;
                   if (items.length === 0) return null;
