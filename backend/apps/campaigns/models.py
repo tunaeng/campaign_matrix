@@ -425,6 +425,28 @@ class LeadChecklistValue(models.Model):
         return f"{self.lead} — {self.checklist_item.text}"
 
 
+class LeadChecklistAttachment(models.Model):
+    """Несколько файлов на один пункт чек-листа (раньше был только file_value)."""
+
+    checklist_value = models.ForeignKey(
+        LeadChecklistValue,
+        on_delete=models.CASCADE,
+        related_name="attachments",
+        verbose_name="Значение чек-листа",
+    )
+    file = models.FileField(upload_to="lead_files/", verbose_name="Файл")
+    order = models.PositiveIntegerField(default=0, verbose_name="Порядок")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Вложение чек-листа"
+        verbose_name_plural = "Вложения чек-листа"
+        ordering = ["order", "id"]
+
+    def __str__(self):
+        return f"{self.checklist_value_id} — {self.file.name}"
+
+
 class LeadInteraction(models.Model):
     class Channel(models.TextChoices):
         EMAIL = "email", "Email"

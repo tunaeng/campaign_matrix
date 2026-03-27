@@ -7,11 +7,14 @@ import {
 } from 'antd';
 import {
   ArrowLeftOutlined, PlusOutlined, UploadOutlined, StopOutlined, UserOutlined, RollbackOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
   useLead, useUpdateLead, useToggleChecklistItem, useCreateChecklistValue,
   useUpdateChecklistValue,
+  useUploadChecklistFile,
+  useDeleteChecklistAttachment,
   useCreateLeadInteraction, useAdvanceLeadStage, useRetreatLeadStage, useRejectLead, useLeadTimeline,
   useContactsByOrganization,
 } from '../../api/hooks';
@@ -66,6 +69,8 @@ export default function LeadDetailPage() {
   const toggleItem = useToggleChecklistItem(leadId!);
   const createValue = useCreateChecklistValue(leadId!);
   const updateValue = useUpdateChecklistValue(leadId!);
+  const uploadChecklistFile = useUploadChecklistFile(leadId!);
+  const deleteChecklistAttachment = useDeleteChecklistAttachment(leadId!);
   const createInteraction = useCreateLeadInteraction(leadId!);
   const advanceStage = useAdvanceLeadStage(leadId!);
   const retreatStage = useRetreatLeadStage(leadId!);
@@ -197,6 +202,14 @@ export default function LeadDetailPage() {
     }
   };
 
+  const resolveChecklistFiles = (v: LeadChecklistValue) => {
+    if (v.files && v.files.length > 0) return v.files;
+    if (v.file_value) {
+      return [{ id: null, url: v.file_value, filename: 'Файл', order: 0 }];
+    }
+    return [];
+  };
+
   const renderConfirmationBlockForType = (
     value: LeadChecklistValue,
     type: string,
@@ -210,14 +223,25 @@ export default function LeadDetailPage() {
               {value.text_value?.trim() ? value.text_value : '—'}
             </Typography.Text>
           );
-        case 'file':
-          return value.file_value ? (
-            <a href={value.file_value} target="_blank" rel="noopener noreferrer">
-              Файл
-            </a>
+        case 'file': {
+          const filesList = resolveChecklistFiles(value);
+          return filesList.length > 0 ? (
+            <Space direction="vertical" size={4}>
+              {filesList.map((f) => (
+                <a
+                  key={String(f.id ?? f.url)}
+                  href={f.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {f.filename?.trim() || 'Файл'}
+                </a>
+              ))}
+            </Space>
           ) : (
             <Typography.Text type="secondary">—</Typography.Text>
           );
+        }
         case 'select':
           return <Tag>{value.select_value || '—'}</Tag>;
         case 'contact':
@@ -242,21 +266,65 @@ export default function LeadDetailPage() {
             onPressEnter={(e) => handleUpdateField(value.id, 'text_value', (e.target as HTMLInputElement).value)}
           />
         );
-      case 'file':
-        return value.file_value ? (
-          <a href={value.file_value} target="_blank" rel="noopener noreferrer">
-            Файл
-          </a>
-        ) : (
-          <Upload
-            action={`/api/leads/${leadId}/checklist/${value.id}/update/`}
-            method="PATCH"
-          >
-            <Button size="small" icon={<UploadOutlined />}>
-              Загрузить
-            </Button>
-          </Upload>
+      case 'file': {
+        const filesList = resolveChecklistFiles(value);
+        return (
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            {filesList.map((f) => (
+              <Space key={String(f.id ?? f.url)} wrap align="center">
+                <a href={f.url} target="_blank" rel="noopener noreferrer">
+                  {f.filename?.trim() || 'Файл'}
+                </a>
+                {f.id != null && (
+                  <Popconfirm
+                    title="Удалить файл?"
+                    onConfirm={() =>
+                      deleteChecklistAttachment.mutateAsync({
+                        valueId: value.id,
+                        attachmentId: f.id as number,
+                      })
+                    }
+                    okText="Да"
+                    cancelText="Нет"
+                  >
+                    <Button
+                      type="text"
+                      danger
+                      size="small"
+                      icon={<DeleteOutlined />}
+                      loading={deleteChecklistAttachment.isPending}
+                    />
+                  </Popconfirm>
+                )}
+              </Space>
+            ))}
+            <Upload
+              multiple
+              showUploadList={false}
+              customRequest={({ file, onSuccess, onError }) => {
+                uploadChecklistFile
+                  .mutateAsync({ valueId: value.id, file: file as File })
+                  .then(() => {
+                    onSuccess?.({}, new XMLHttpRequest());
+                    message.success('Файл добавлен');
+                  })
+                  .catch((err) => {
+                    onError?.(err as Error);
+                    message.error('Не удалось загрузить файл');
+                  });
+              }}
+            >
+              <Button
+                size="small"
+                icon={<UploadOutlined />}
+                loading={uploadChecklistFile.isPending}
+              >
+                {filesList.length ? 'Добавить файл' : 'Загрузить'}
+              </Button>
+            </Upload>
+          </Space>
         );
+      }
       case 'select':
         return (
           <Select

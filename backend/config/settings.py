@@ -41,6 +41,10 @@ INSTALLED_APPS = [
     "apps.funnels",
 ]
 
+USE_S3_STORAGE = os.environ.get("DJANGO_USE_S3", "").lower() in ("true", "1", "yes")
+if USE_S3_STORAGE:
+    INSTALLED_APPS.append("storages")
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -133,6 +137,56 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Файлы (чек-листы лидов и т.д.): локально или S3-совместимое хранилище (REG.RU Cloud и др.)
+MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_URL = "/media/"
+
+if USE_S3_STORAGE:
+    AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", "")
+    AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    AWS_STORAGE_BUCKET_NAME = os.environ.get("AWS_STORAGE_BUCKET_NAME", "")
+    AWS_S3_ENDPOINT_URL = os.environ.get(
+        "AWS_S3_ENDPOINT_URL", "https://s3.regru.cloud"
+    ).rstrip("/")
+    AWS_S3_REGION_NAME = os.environ.get("AWS_S3_REGION_NAME", "ru-msk")
+    AWS_S3_ADDRESSING_STYLE = os.environ.get("AWS_S3_ADDRESSING_STYLE", "path")
+    AWS_S3_SIGNATURE_VERSION = os.environ.get("AWS_S3_SIGNATURE_VERSION", "s3v4")
+    AWS_DEFAULT_ACL = os.environ.get("AWS_DEFAULT_ACL") or None
+    # При приватном бакете без ACL public-read прямые URL без ?X-Amz-* дают AccessDenied.
+    # True: в .url отдаются presigned URL (работают в браузере по ссылке из API).
+    _qsa_raw = os.environ.get("AWS_QUERYSTRING_AUTH")
+    if _qsa_raw is None or str(_qsa_raw).strip() == "":
+        AWS_QUERYSTRING_AUTH = True
+    else:
+        AWS_QUERYSTRING_AUTH = str(_qsa_raw).lower() in ("true", "1", "yes")
+    AWS_QUERYSTRING_EXPIRE = int(
+        os.environ.get("AWS_QUERYSTRING_EXPIRE", "86400")
+    )  # сек., по умолчанию 24 ч
+    _domain = (os.environ.get("AWS_S3_CUSTOM_DOMAIN") or "").strip()
+    if _domain:
+        AWS_S3_CUSTOM_DOMAIN = _domain
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+else:
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+            "OPTIONS": {
+                "location": str(MEDIA_ROOT),
+                "base_url": MEDIA_URL,
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
 
 # CORS
 CORS_ALLOWED_ORIGINS = os.environ.get(

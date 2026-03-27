@@ -12,6 +12,10 @@ client.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  // multipart/form-data: границу задаёт браузер; глобальный Content-Type: application/json ломает загрузку файлов
+  if (config.data instanceof FormData) {
+    delete (config.headers as Record<string, unknown>)['Content-Type'];
+  }
   return config;
 });
 

@@ -9,7 +9,8 @@ from rest_framework.response import Response
 from .models import (
     Campaign, CampaignQueue, CampaignProgram,
     CampaignRegion, CampaignOrganization,
-    QueueStageDeadline, Lead, LeadChecklistValue, LeadInteraction,
+    QueueStageDeadline, Lead, LeadChecklistValue, LeadChecklistAttachment,
+    LeadInteraction,
     LeadActivityLog,
 )
 from .db_compat import lead_table_has_quota_split_columns
@@ -294,6 +295,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             "queue", "manager", "primary_contact",
         ).prefetch_related(
             "checklist_values__checklist_item",
+            "checklist_values__attachments",
             "interactions",
         )
 
@@ -314,15 +316,19 @@ class LeadViewSet(viewsets.ModelViewSet):
     def checklist(self, request, pk=None):
         lead = self.get_object()
         if request.method == "GET":
-            values = lead.checklist_values.select_related("checklist_item")
-            serializer = LeadChecklistValueSerializer(values, many=True)
+            values = lead.checklist_values.select_related(
+                "checklist_item"
+            ).prefetch_related("attachments")
+            serializer = LeadChecklistValueSerializer(
+                values, many=True, context={"request": request}
+            )
             return Response(serializer.data)
 
         data = {**request.data, "lead": lead.pk}
         if request.data.get("is_completed"):
             data["completed_at"] = timezone.now().isoformat()
             data["completed_by"] = request.user.pk
-        serializer = LeadChecklistValueSerializer(data=data)
+        serializer = LeadChecklistValueSerializer(data=data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -349,7 +355,9 @@ class LeadViewSet(viewsets.ModelViewSet):
         else:
             summary = f"Снята отметка с пункта «{item_text}»"
         _log_lead_activity(lead, request.user, LeadActivityLog.EventType.CHECKLIST, summary)
-        return Response(LeadChecklistValueSerializer(value).data)
+        return Response(
+            LeadChecklistValueSerializer(value, context={"request": request}).data
+        )
 
     @action(detail=True, methods=["patch"], url_path="checklist/(?P<value_id>[^/.]+)/update")
     def update_checklist_value(self, request, pk=None, value_id=None):
@@ -358,6 +366,21 @@ class LeadViewSet(viewsets.ModelViewSet):
             value = lead.checklist_values.select_related("checklist_item").get(pk=value_id)
         except LeadChecklistValue.DoesNotExist:
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        files_list = list(request.FILES.getlist("files"))
+        if not files_list:
+            files_list = list(request.FILES.getlist("file"))
+        if not files_list:
+            single = request.FILES.get("file") or request.FILES.get("file_value")
+            if single:
+                files_list = [single]
+        files_added = False
+        for f in files_list:
+            order = value.attachments.count()
+            LeadChecklistAttachment.objects.create(
+                checklist_value=value, file=f, order=order
+            )
+            files_added = True
 
         updatable = [
             "text_value", "select_value",
@@ -384,6 +407,8 @@ class LeadViewSet(viewsets.ModelViewSet):
         value.save()
 
         changed_labels = []
+        if files_added:
+            changed_labels.append("файл")
         for field in updatable:
             if field in request.data and old_snapshot[field] != getattr(value, field):
                 changed_labels.append(field_labels.get(field, field))
@@ -400,7 +425,40 @@ class LeadViewSet(viewsets.ModelViewSet):
                 LeadActivityLog.EventType.CHECKLIST,
                 f"«{item_text}»: {parts}",
             )
-        return Response(LeadChecklistValueSerializer(value).data)
+        return Response(
+            LeadChecklistValueSerializer(value, context={"request": request}).data
+        )
+
+    @action(
+        detail=True,
+        methods=["delete"],
+        url_path=r"checklist/(?P<value_id>[^/.]+)/attachments/(?P<attachment_id>[^/.]+)",
+    )
+    def delete_checklist_attachment(self, request, pk=None, value_id=None, attachment_id=None):
+        lead = self.get_object()
+        try:
+            value = lead.checklist_values.select_related("checklist_item").get(pk=value_id)
+        except LeadChecklistValue.DoesNotExist:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            att = value.attachments.get(pk=attachment_id)
+        except LeadChecklistAttachment.DoesNotExist:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        item_text = value.checklist_item.text
+        att.file.delete(save=False)
+        att.delete()
+        _log_lead_activity(
+            lead,
+            request.user,
+            LeadActivityLog.EventType.CHECKLIST,
+            f"«{item_text}»: удалён файл вложения",
+        )
+        value.refresh_from_db()
+        return Response(
+            LeadChecklistValueSerializer(value, context={"request": request}).data
+        )
 
     @action(detail=True, methods=["get", "post"], url_path="interactions")
     def interactions(self, request, pk=None):

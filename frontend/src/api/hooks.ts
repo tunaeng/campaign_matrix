@@ -373,6 +373,47 @@ export function useUpdateChecklistValue(leadId: number | string) {
   });
 }
 
+/** Загрузка одного или нескольких файлов в пункт чек-листа (multipart + JWT). */
+export function useUploadChecklistFile(leadId: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ valueId, file }: { valueId: number; file: File | File[] }) => {
+      const fd = new FormData();
+      const list = Array.isArray(file) ? file : [file];
+      list.forEach((f) => fd.append('files', f));
+      return client
+        .patch(`/leads/${leadId}/checklist/${valueId}/update/`, fd)
+        .then((r) => r.data);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lead', leadId] });
+      qc.invalidateQueries({ queryKey: ['lead-timeline', leadId] });
+    },
+  });
+}
+
+export function useDeleteChecklistAttachment(leadId: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      valueId,
+      attachmentId,
+    }: {
+      valueId: number;
+      attachmentId: number;
+    }) =>
+      client
+        .delete(
+          `/leads/${leadId}/checklist/${valueId}/attachments/${attachmentId}/`,
+        )
+        .then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lead', leadId] });
+      qc.invalidateQueries({ queryKey: ['lead-timeline', leadId] });
+    },
+  });
+}
+
 export function useLeadInteractions(
   leadId: number | string | undefined,
   options?: { enabled?: boolean },

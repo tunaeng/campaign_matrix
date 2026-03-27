@@ -1,3 +1,5 @@
+import os
+
 from django.db import transaction
 from django.db.models import Sum
 from django.db.utils import OperationalError, ProgrammingError
@@ -7,7 +9,7 @@ from .models import (
     Campaign, CampaignQueue, CampaignProgram,
     CampaignRegion, CampaignOrganization,
     CampaignFunnel, QueueStageDeadline,
-    Lead, LeadChecklistValue, LeadInteraction,
+    Lead, LeadChecklistValue, LeadChecklistAttachment, LeadInteraction,
 )
 from apps.accounts.serializers import UserShortSerializer
 
@@ -177,6 +179,31 @@ class CampaignOrganizationSerializer(serializers.ModelSerializer):
 
 # Lead serializers
 
+class LeadChecklistAttachmentSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+    filename = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LeadChecklistAttachment
+        fields = ["id", "url", "filename", "order"]
+
+    def get_url(self, obj):
+        if not obj.file:
+            return None
+        url = obj.file.url
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(url)
+        return url
+
+    def get_filename(self, obj):
+        if not obj.file:
+            return ""
+        return os.path.basename(obj.file.name)
+
+
 class LeadChecklistValueSerializer(serializers.ModelSerializer):
     checklist_item_text = serializers.CharField(
         source="checklist_item.text", read_only=True
@@ -187,6 +214,8 @@ class LeadChecklistValueSerializer(serializers.ModelSerializer):
         source="checklist_item.stage_id", read_only=True
     )
     options = serializers.SerializerMethodField()
+    files = serializers.SerializerMethodField()
+    file_value = serializers.SerializerMethodField()
     contact_full_name = serializers.CharField(
         source="contact.full_name", read_only=True, default=None
     )
@@ -196,7 +225,7 @@ class LeadChecklistValueSerializer(serializers.ModelSerializer):
         fields = [
             "id", "lead", "checklist_item", "checklist_item_text",
             "confirmation_types", "confirmation_types_display", "stage_id", "options", "is_completed",
-            "text_value", "file_value", "select_value",
+            "text_value", "files", "file_value", "select_value",
             "contact", "contact_full_name",
             "contact_name", "contact_position", "contact_phone",
             "contact_email", "contact_messenger",
@@ -216,6 +245,41 @@ class LeadChecklistValueSerializer(serializers.ModelSerializer):
         return list(
             obj.checklist_item.options.order_by("order").values_list("value", flat=True)
         )
+
+    def _abs_url_for_fieldfile(self, file_field):
+        if not file_field:
+            return None
+        url = file_field.url
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(url)
+        return url
+
+    def get_files(self, obj):
+        atts = obj.attachments.all()
+        if atts.exists():
+            return LeadChecklistAttachmentSerializer(
+                atts, many=True, context=self.context
+            ).data
+        if obj.file_value:
+            return [
+                {
+                    "id": None,
+                    "url": self._abs_url_for_fieldfile(obj.file_value),
+                    "filename": os.path.basename(obj.file_value.name),
+                    "order": 0,
+                }
+            ]
+        return []
+
+    def get_file_value(self, obj):
+        """Первый файл (совместимость со старым фронтом)."""
+        first = obj.attachments.first()
+        if first and first.file:
+            return self._abs_url_for_fieldfile(first.file)
+        return self._abs_url_for_fieldfile(obj.file_value) if obj.file_value else None
 
 
 class LeadInteractionSerializer(serializers.ModelSerializer):

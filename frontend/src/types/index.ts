@@ -338,6 +338,13 @@ export interface Contact {
   updated_at: string;
 }
 
+export interface LeadChecklistFile {
+  id: number | null;
+  url: string;
+  filename: string;
+  order: number;
+}
+
 export interface LeadChecklistValue {
   id: number;
   lead: number;
@@ -349,6 +356,9 @@ export interface LeadChecklistValue {
   options: string[];
   is_completed: boolean;
   text_value: string;
+  /** Список вложений; приоритет над file_value */
+  files?: LeadChecklistFile[];
+  /** Первый файл (совместимость) */
   file_value: string | null;
   select_value: string;
   contact: number | null;
