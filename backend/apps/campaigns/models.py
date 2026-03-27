@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 
 
 class Campaign(models.Model):
@@ -318,7 +319,27 @@ class Lead(models.Model):
     demand_count = models.IntegerField(
         default=0, verbose_name="Фактическая потребность (чел.)"
     )
+    demand_collected_declared = models.IntegerField(
+        default=0, verbose_name="Собрано по заявленной квоте (чел.)"
+    )
+    demand_collected_list = models.IntegerField(
+        default=0, verbose_name="Собрано по списочной квоте (чел.)"
+    )
+    demand_quota_declared = models.IntegerField(
+        default=0, verbose_name="Квота заявленная (чел.)"
+    )
+    demand_quota_list = models.IntegerField(
+        default=0, verbose_name="Квота списочная (чел.)"
+    )
     notes = models.TextField(blank=True, verbose_name="Примечания")
+    primary_contact = models.ForeignKey(
+        "organizations.Contact",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="primary_for_leads",
+        verbose_name="Основной контакт",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -327,6 +348,13 @@ class Lead(models.Model):
         verbose_name_plural = "Лиды"
         unique_together = ["campaign", "organization", "funnel"]
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization"],
+                condition=Q(primary_contact__isnull=False),
+                name="lead_org_single_primary_contact",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.organization} [{self.funnel}]"
@@ -448,3 +476,41 @@ class LeadInteraction(models.Model):
 
     def __str__(self):
         return f"{self.lead} — {self.get_channel_display()} ({self.date})"
+
+
+class LeadActivityLog(models.Model):
+    """Журнал: смена стадии и изменения чек-листа (для общей ленты с взаимодействиями)."""
+
+    class EventType(models.TextChoices):
+        STAGE = "stage", "Стадия"
+        CHECKLIST = "checklist", "Чек-лист"
+
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.CASCADE,
+        related_name="activity_logs",
+        verbose_name="Лид",
+    )
+    event_type = models.CharField(
+        max_length=20,
+        choices=EventType.choices,
+        verbose_name="Тип",
+    )
+    summary = models.CharField(max_length=500, verbose_name="Описание")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Когда")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="lead_activity_logs",
+        verbose_name="Кто",
+    )
+
+    class Meta:
+        verbose_name = "Запись активности лида"
+        verbose_name_plural = "Активность лида"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.lead} — {self.summary[:60]}"
