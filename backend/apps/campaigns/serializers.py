@@ -181,9 +181,8 @@ class LeadChecklistValueSerializer(serializers.ModelSerializer):
     checklist_item_text = serializers.CharField(
         source="checklist_item.text", read_only=True
     )
-    confirmation_type = serializers.CharField(
-        source="checklist_item.confirmation_type", read_only=True
-    )
+    confirmation_types = serializers.SerializerMethodField()
+    confirmation_types_display = serializers.SerializerMethodField()
     stage_id = serializers.IntegerField(
         source="checklist_item.stage_id", read_only=True
     )
@@ -196,7 +195,7 @@ class LeadChecklistValueSerializer(serializers.ModelSerializer):
         model = LeadChecklistValue
         fields = [
             "id", "lead", "checklist_item", "checklist_item_text",
-            "confirmation_type", "stage_id", "options", "is_completed",
+            "confirmation_types", "confirmation_types_display", "stage_id", "options", "is_completed",
             "text_value", "file_value", "select_value",
             "contact", "contact_full_name",
             "contact_name", "contact_position", "contact_phone",
@@ -205,8 +204,14 @@ class LeadChecklistValueSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "completed_at", "completed_by"]
 
+    def get_confirmation_types(self, obj):
+        return list(obj.checklist_item.confirmation_types or [])
+
+    def get_confirmation_types_display(self, obj):
+        return obj.checklist_item.get_confirmation_types_display_list()
+
     def get_options(self, obj):
-        if obj.checklist_item.confirmation_type != "select":
+        if "select" not in (obj.checklist_item.confirmation_types or []):
             return []
         return list(
             obj.checklist_item.options.order_by("order").values_list("value", flat=True)

@@ -30,6 +30,13 @@ const channelOptions = [
   { value: 'other', label: 'Другое' },
 ];
 
+const CONFIRMATION_TYPE_LABELS: Record<string, string> = {
+  text: 'Текст',
+  file: 'Файл',
+  select: 'Выбор',
+  contact: 'Контакт',
+};
+
 export default function LeadDetailPage() {
   const { message } = App.useApp();
   const { campaignId, leadId } = useParams<{ campaignId: string; leadId: string }>();
@@ -190,30 +197,32 @@ export default function LeadDetailPage() {
     }
   };
 
-  const renderConfirmationField = (value: LeadChecklistValue, readOnly = false) => {
+  const renderConfirmationBlockForType = (
+    value: LeadChecklistValue,
+    type: string,
+    readOnly: boolean,
+  ) => {
     if (readOnly) {
-      switch (value.confirmation_type) {
+      switch (type) {
         case 'text':
           return (
-            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+            <Typography.Text type="secondary">
               {value.text_value?.trim() ? value.text_value : '—'}
             </Typography.Text>
           );
         case 'file':
           return value.file_value ? (
-            <a href={value.file_value} target="_blank" rel="noopener noreferrer" style={{ marginLeft: 8 }}>
+            <a href={value.file_value} target="_blank" rel="noopener noreferrer">
               Файл
             </a>
           ) : (
-            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>—</Typography.Text>
+            <Typography.Text type="secondary">—</Typography.Text>
           );
         case 'select':
-          return (
-            <Tag style={{ marginLeft: 8 }}>{value.select_value || '—'}</Tag>
-          );
+          return <Tag>{value.select_value || '—'}</Tag>;
         case 'contact':
           return (
-            <Typography.Text style={{ marginLeft: 8 }}>
+            <Typography.Text>
               {value.contact_full_name || value.contact_name || '—'}
             </Typography.Text>
           );
@@ -221,12 +230,12 @@ export default function LeadDetailPage() {
           return null;
       }
     }
-    switch (value.confirmation_type) {
+    switch (type) {
       case 'text':
         return (
           <Input
             size="small"
-            style={{ marginLeft: 8, flex: 1, maxWidth: 400 }}
+            style={{ flex: 1, maxWidth: 400 }}
             placeholder="Введите текст подтверждения"
             defaultValue={value.text_value}
             onBlur={(e) => handleUpdateField(value.id, 'text_value', e.target.value)}
@@ -235,16 +244,15 @@ export default function LeadDetailPage() {
         );
       case 'file':
         return value.file_value ? (
-          <a href={value.file_value} target="_blank" rel="noopener noreferrer" style={{ marginLeft: 8 }}>
+          <a href={value.file_value} target="_blank" rel="noopener noreferrer">
             Файл
           </a>
         ) : (
           <Upload
             action={`/api/leads/${leadId}/checklist/${value.id}/update/`}
             method="PATCH"
-            style={{ marginLeft: 8 }}
           >
-            <Button size="small" icon={<UploadOutlined />} style={{ marginLeft: 8 }}>
+            <Button size="small" icon={<UploadOutlined />}>
               Загрузить
             </Button>
           </Upload>
@@ -253,7 +261,7 @@ export default function LeadDetailPage() {
         return (
           <Select
             size="small"
-            style={{ marginLeft: 8, minWidth: 180 }}
+            style={{ minWidth: 180 }}
             placeholder="Выберите"
             value={value.select_value || undefined}
             onChange={(v) => handleUpdateField(value.id, 'select_value', v)}
@@ -263,28 +271,26 @@ export default function LeadDetailPage() {
         );
       case 'contact':
         return (
-          <div style={{ marginLeft: 8 }}>
-            <ContactSelector
-              organizationId={lead.organization}
-              organizationName={lead.organization_name}
-              value={value.contact}
-              size="small"
-              style={{ minWidth: 300 }}
-              onChange={(contactId) => {
-                handleUpdateField(value.id, 'contact', contactId);
-              }}
-              onContactDetails={(details) => {
-                updateValue.mutateAsync({
-                  valueId: value.id,
-                  contact_name: details.contact_person,
-                  contact_position: details.contact_position,
-                  contact_phone: details.contact_phone,
-                  contact_email: details.contact_email,
-                  contact_messenger: details.contact_messenger,
-                });
-              }}
-            />
-          </div>
+          <ContactSelector
+            organizationId={lead.organization}
+            organizationName={lead.organization_name}
+            value={value.contact}
+            size="small"
+            style={{ minWidth: 300 }}
+            onChange={(contactId) => {
+              handleUpdateField(value.id, 'contact', contactId);
+            }}
+            onContactDetails={(details) => {
+              updateValue.mutateAsync({
+                valueId: value.id,
+                contact_name: details.contact_person,
+                contact_position: details.contact_position,
+                contact_phone: details.contact_phone,
+                contact_email: details.contact_email,
+                contact_messenger: details.contact_messenger,
+              });
+            }}
+          />
         );
       default:
         return null;
@@ -308,9 +314,27 @@ export default function LeadDetailPage() {
           {value.checklist_item_text}
         </Checkbox>
       </div>
-      {value.confirmation_type && value.confirmation_type !== 'none' && (
-        <div style={{ marginLeft: 24, marginTop: 6, display: 'flex', alignItems: 'center' }}>
-          {renderConfirmationField(value, readOnly)}
+      {(value.confirmation_types?.length ?? 0) > 0 && (
+        <div style={{ marginLeft: 24, marginTop: 6 }}>
+          {(value.confirmation_types || []).map((t) => (
+            <div
+              key={t}
+              style={{
+                marginBottom: 8,
+                display: 'flex',
+                alignItems: 'flex-start',
+                flexWrap: 'wrap',
+                gap: 8,
+              }}
+            >
+              <Typography.Text type="secondary" style={{ minWidth: 72 }}>
+                {CONFIRMATION_TYPE_LABELS[t] || t}:
+              </Typography.Text>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {renderConfirmationBlockForType(value, t, readOnly)}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

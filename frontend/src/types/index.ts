@@ -285,8 +285,8 @@ export interface StageChecklistItem {
   stage: number;
   text: string;
   order: number;
-  confirmation_type: 'none' | 'text' | 'file' | 'select' | 'contact';
-  confirmation_type_display: string;
+  confirmation_types: ('text' | 'file' | 'select' | 'contact')[];
+  confirmation_types_display: string[];
   options: ChecklistItemOption[];
 }
 
@@ -343,7 +343,8 @@ export interface LeadChecklistValue {
   lead: number;
   checklist_item: number;
   checklist_item_text: string;
-  confirmation_type: string;
+  confirmation_types: string[];
+  confirmation_types_display: string[];
   stage_id: number;
   options: string[];
   is_completed: boolean;

@@ -13,7 +13,7 @@ backend/.pytest_cache/
 backend/.mypy_cache/
 backend/db.sqlite3
 backend/*.sqlite3
-
+backend/staticfiles/
 # Django / env
 .env
 backend/.env

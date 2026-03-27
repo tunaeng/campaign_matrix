@@ -76,11 +76,11 @@ class StageChecklistItem(models.Model):
     )
     text = models.CharField(max_length=500, verbose_name="Текст пункта")
     order = models.PositiveIntegerField(default=0, verbose_name="Порядок")
-    confirmation_type = models.CharField(
-        max_length=20,
-        choices=ConfirmationType.choices,
-        default=ConfirmationType.NONE,
-        verbose_name="Тип подтверждения",
+    confirmation_types = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="Типы подтверждения",
+        help_text='Список кодов: text, file, select, contact. Пустой список — без подтверждения.',
     )
 
     class Meta:
@@ -90,6 +90,10 @@ class StageChecklistItem(models.Model):
 
     def __str__(self):
         return self.text
+
+    def get_confirmation_types_display_list(self):
+        labels = dict(self.ConfirmationType.choices)
+        return [labels.get(code, code) for code in (self.confirmation_types or [])]
 
 
 class ChecklistItemOption(models.Model):

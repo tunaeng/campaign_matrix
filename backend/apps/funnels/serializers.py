@@ -11,18 +11,38 @@ class ChecklistItemOptionSerializer(serializers.ModelSerializer):
 
 class StageChecklistItemSerializer(serializers.ModelSerializer):
     options = ChecklistItemOptionSerializer(many=True, read_only=True)
-    confirmation_type_display = serializers.CharField(
-        source="get_confirmation_type_display", read_only=True
-    )
+    confirmation_types_display = serializers.SerializerMethodField()
 
     class Meta:
         model = StageChecklistItem
         fields = [
             "id", "stage", "text", "order",
-            "confirmation_type", "confirmation_type_display",
+            "confirmation_types", "confirmation_types_display",
             "options",
         ]
         read_only_fields = ["id"]
+
+    def get_confirmation_types_display(self, obj):
+        return obj.get_confirmation_types_display_list()
+
+    def validate_confirmation_types(self, value):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Ожидается список строк.")
+        allowed = {
+            c[0]
+            for c in StageChecklistItem.ConfirmationType.choices
+            if c[0] != StageChecklistItem.ConfirmationType.NONE
+        }
+        seen = set()
+        for t in value:
+            if t not in allowed:
+                raise serializers.ValidationError(f"Недопустимый тип: {t!r}.")
+            if t in seen:
+                raise serializers.ValidationError("Типы не должны повторяться.")
+            seen.add(t)
+        return value
 
 
 class FunnelStageSerializer(serializers.ModelSerializer):

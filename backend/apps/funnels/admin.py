@@ -36,6 +36,6 @@ class FunnelStageAdmin(admin.ModelAdmin):
 
 @admin.register(StageChecklistItem)
 class StageChecklistItemAdmin(admin.ModelAdmin):
-    list_display = ["text", "stage", "order", "confirmation_type"]
-    list_filter = ["confirmation_type", "stage__funnel"]
+    list_display = ["text", "stage", "order", "confirmation_types"]
+    list_filter = ["stage__funnel"]
     inlines = [ChecklistItemOptionInline]

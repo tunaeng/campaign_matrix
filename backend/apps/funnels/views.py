@@ -70,7 +70,7 @@ class FunnelStageViewSet(viewsets.ModelViewSet):
 
 class StageChecklistItemViewSet(viewsets.ModelViewSet):
     serializer_class = StageChecklistItemSerializer
-    filterset_fields = ["stage", "confirmation_type"]
+    filterset_fields = ["stage"]
 
     def get_queryset(self):
         return StageChecklistItem.objects.select_related("stage").prefetch_related(

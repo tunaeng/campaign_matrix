@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Typography, Button, Space, Spin, Input, Switch, Form, Modal,
-  Select, InputNumber, Collapse, Tag, Popconfirm, App, Empty,
+  Select, InputNumber, Collapse, Tag, Popconfirm, App, Empty, Tooltip,
 } from 'antd';
 import {
-  ArrowLeftOutlined, PlusOutlined, DeleteOutlined, EditOutlined, SaveOutlined,
+  ArrowLeftOutlined, ArrowUpOutlined, ArrowDownOutlined,
+  PlusOutlined, DeleteOutlined, EditOutlined, SaveOutlined,
 } from '@ant-design/icons';
 import {
   useFunnel, useUpdateFunnel,
@@ -15,8 +16,8 @@ import {
 } from '../../api/hooks';
 import type { FunnelStage, StageChecklistItem } from '../../types';
 
-const confirmationTypes = [
-  { value: 'none', label: 'Без подтверждения' },
+/** Типы подтверждения (можно несколько). Пустой список — без подтверждения. */
+const confirmationTypeOptions = [
   { value: 'text', label: 'Текст' },
   { value: 'file', label: 'Файл(ы)' },
   { value: 'select', label: 'Выбор из списка' },
@@ -43,6 +44,7 @@ export default function FunnelDetailPage() {
   const [stageModalOpen, setStageModalOpen] = useState(false);
   const [stageForm] = Form.useForm();
   const [itemModalOpen, setItemModalOpen] = useState(false);
+  const [editingChecklistItem, setEditingChecklistItem] = useState<StageChecklistItem | null>(null);
   const [itemForm] = Form.useForm();
   const [activeStageId, setActiveStageId] = useState<number | null>(null);
   const [optionModalOpen, setOptionModalOpen] = useState(false);
@@ -84,14 +86,62 @@ export default function FunnelDetailPage() {
     await updateStage.mutateAsync({ stageId, deadline_days: days });
   };
 
-  const handleCreateItem = async () => {
+  const handleSaveItem = async () => {
     try {
       const values = await itemForm.validateFields();
-      await createItem.mutateAsync({ ...values, stage: activeStageId });
-      message.success('Пункт добавлен');
+      if (editingChecklistItem) {
+        await updateItem.mutateAsync({
+          itemId: editingChecklistItem.id,
+          text: values.text,
+          order: values.order,
+          confirmation_types: values.confirmation_types ?? [],
+        });
+        message.success('Пункт обновлён');
+      } else {
+        await createItem.mutateAsync({
+          ...values,
+          stage: activeStageId,
+          confirmation_types: values.confirmation_types ?? [],
+        });
+        message.success('Пункт добавлен');
+      }
       setItemModalOpen(false);
+      setEditingChecklistItem(null);
       itemForm.resetFields();
     } catch { /* validation */ }
+  };
+
+  const closeItemModal = () => {
+    setItemModalOpen(false);
+    setEditingChecklistItem(null);
+    itemForm.resetFields();
+  };
+
+  const openEditItem = (item: StageChecklistItem) => {
+    setEditingChecklistItem(item);
+    itemForm.setFieldsValue({
+      text: item.text,
+      order: item.order,
+      confirmation_types: item.confirmation_types ?? [],
+    });
+    setItemModalOpen(true);
+  };
+
+  const moveChecklistItem = async (stage: FunnelStage, itemId: number, direction: 'up' | 'down') => {
+    const sorted = [...stage.checklist_items].sort((a, b) =>
+      a.order !== b.order ? a.order - b.order : a.id - b.id,
+    );
+    const idx = sorted.findIndex((i) => i.id === itemId);
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= sorted.length) return;
+    const arr = [...sorted];
+    [arr[idx], arr[swapIdx]] = [arr[swapIdx], arr[idx]];
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i].order !== i) {
+        await updateItem.mutateAsync({ itemId: arr[i].id, order: i });
+      }
+    }
+    message.success('Порядок обновлён');
   };
 
   const handleDeleteItem = async (itemId: number) => {
@@ -99,8 +149,11 @@ export default function FunnelDetailPage() {
     message.success('Пункт удалён');
   };
 
-  const handleUpdateItemType = async (itemId: number, confirmationType: string) => {
-    await updateItem.mutateAsync({ itemId, confirmation_type: confirmationType as any });
+  const handleUpdateItemTypes = async (
+    itemId: number,
+    types: StageChecklistItem['confirmation_types'],
+  ) => {
+    await updateItem.mutateAsync({ itemId, confirmation_types: types });
   };
 
   const handleAddOption = async () => {
@@ -124,25 +177,28 @@ export default function FunnelDetailPage() {
     message.success('Вариант удалён');
   };
 
-  const renderChecklistItem = (item: StageChecklistItem) => (
+  const renderChecklistItem = (stage: FunnelStage, item: StageChecklistItem, index: number, total: number) => (
     <div
       key={item.id}
       style={{
-        display: 'flex', alignItems: 'flex-start', gap: 8,
+        display: 'flex', alignItems: 'flex-start', gap: 12,
         padding: '8px 0', borderBottom: '1px solid #f5f5f5',
       }}
     >
-      <div style={{ flex: 1 }}>
-        <Typography.Text strong>{item.order + 1}. {item.text}</Typography.Text>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Typography.Text strong>{index + 1}. {item.text}</Typography.Text>
         <div style={{ marginTop: 4 }}>
           <Select
+            mode="multiple"
+            allowClear
+            placeholder="Без подтверждения"
             size="small"
-            value={item.confirmation_type}
-            onChange={(v) => handleUpdateItemType(item.id, v)}
-            options={confirmationTypes}
-            style={{ width: 180 }}
+            value={item.confirmation_types ?? []}
+            onChange={(v) => handleUpdateItemTypes(item.id, v)}
+            options={confirmationTypeOptions}
+            style={{ minWidth: 220, maxWidth: '100%' }}
           />
-          {item.confirmation_type === 'select' && (
+          {(item.confirmation_types ?? []).includes('select') && (
             <div style={{ marginTop: 4, marginLeft: 8 }}>
               {item.options.map(opt => (
                 <Tag
@@ -164,9 +220,42 @@ export default function FunnelDetailPage() {
           )}
         </div>
       </div>
-      <Popconfirm title="Удалить пункт?" onConfirm={() => handleDeleteItem(item.id)} okText="Да" cancelText="Нет">
-        <Button type="text" danger size="small" icon={<DeleteOutlined />} />
-      </Popconfirm>
+      <Space size={4} wrap={false} style={{ flexShrink: 0, alignItems: 'flex-start' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12, lineHeight: '24px', marginRight: 4 }}>
+          Порядок:
+        </Typography.Text>
+        <Button.Group size="small">
+          <Tooltip title="Выше">
+            <Button
+              type="default"
+              icon={<ArrowUpOutlined />}
+              disabled={index === 0 || updateItem.isPending}
+              onClick={() => moveChecklistItem(stage, item.id, 'up')}
+            />
+          </Tooltip>
+          <Tooltip title="Ниже">
+            <Button
+              type="default"
+              icon={<ArrowDownOutlined />}
+              disabled={index >= total - 1 || updateItem.isPending}
+              onClick={() => moveChecklistItem(stage, item.id, 'down')}
+            />
+          </Tooltip>
+        </Button.Group>
+        <Button
+          type="default"
+          size="small"
+          icon={<EditOutlined />}
+          onClick={() => openEditItem(item)}
+        >
+          Изменить
+        </Button>
+        <Popconfirm title="Удалить пункт?" onConfirm={() => handleDeleteItem(item.id)} okText="Да" cancelText="Нет">
+          <Button type="default" danger size="small" icon={<DeleteOutlined />}>
+            Удалить
+          </Button>
+        </Popconfirm>
+      </Space>
     </div>
   );
 
@@ -201,7 +290,9 @@ export default function FunnelDetailPage() {
         {stage.checklist_items.length === 0 ? (
           <Empty description="Нет пунктов чек-листа" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
-          stage.checklist_items.map(renderChecklistItem)
+          [...stage.checklist_items]
+            .sort((a, b) => (a.order !== b.order ? a.order - b.order : a.id - b.id))
+            .map((item, idx, arr) => renderChecklistItem(stage, item, idx, arr.length))
         )}
         <Button
           type="dashed"
@@ -210,7 +301,8 @@ export default function FunnelDetailPage() {
           style={{ marginTop: 8 }}
           onClick={() => {
             setActiveStageId(stage.id);
-            itemForm.setFieldsValue({ order: stage.checklist_items.length });
+            setEditingChecklistItem(null);
+            itemForm.setFieldsValue({ order: stage.checklist_items.length, confirmation_types: [] });
             setItemModalOpen(true);
           }}
         >
@@ -305,13 +397,13 @@ export default function FunnelDetailPage() {
       </Modal>
 
       <Modal
-        title="Новый пункт чек-листа"
+        title={editingChecklistItem ? 'Редактировать пункт чек-листа' : 'Новый пункт чек-листа'}
         open={itemModalOpen}
-        onOk={handleCreateItem}
-        onCancel={() => { setItemModalOpen(false); itemForm.resetFields(); }}
-        okText="Добавить"
+        onOk={handleSaveItem}
+        onCancel={closeItemModal}
+        okText={editingChecklistItem ? 'Сохранить' : 'Добавить'}
         cancelText="Отмена"
-        confirmLoading={createItem.isPending}
+        confirmLoading={editingChecklistItem ? updateItem.isPending : createItem.isPending}
       >
         <Form form={itemForm} layout="vertical">
           <Form.Item name="text" label="Текст пункта" rules={[{ required: true, message: 'Обязательно' }]}>
@@ -320,8 +412,13 @@ export default function FunnelDetailPage() {
           <Form.Item name="order" label="Порядок">
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="confirmation_type" label="Тип подтверждения" initialValue="none">
-            <Select options={confirmationTypes} />
+          <Form.Item
+            name="confirmation_types"
+            label="Типы подтверждения"
+            tooltip="Можно выбрать несколько. Пусто — пункт без подтверждения."
+            initialValue={[]}
+          >
+            <Select mode="multiple" allowClear placeholder="Без подтверждения" options={confirmationTypeOptions} />
           </Form.Item>
         </Form>
       </Modal>

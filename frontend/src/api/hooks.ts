@@ -213,7 +213,7 @@ export function useDeleteFunnelStage(funnelId: number | string) {
 export function useCreateChecklistItem(funnelId: number | string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { stage: number; text: string; order: number; confirmation_type: string }) =>
+    mutationFn: (data: { stage: number; text: string; order: number; confirmation_types: string[] }) =>
       client.post('/checklist-items/', data).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['funnel', funnelId] }),
   });
