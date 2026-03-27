@@ -335,6 +335,7 @@ export function useUpdateLead(id: number | string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['lead', id] });
       qc.invalidateQueries({ queryKey: ['leads'] });
+      qc.invalidateQueries({ queryKey: ['campaign'] });
     },
   });
 }
@@ -344,7 +345,10 @@ export function useToggleChecklistItem(leadId: number | string) {
   return useMutation({
     mutationFn: (valueId: number) =>
       client.post(`/leads/${leadId}/checklist/${valueId}/toggle/`).then(r => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['lead', leadId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lead', leadId] });
+      qc.invalidateQueries({ queryKey: ['lead-timeline', leadId] });
+    },
   });
 }
 
@@ -362,14 +366,45 @@ export function useUpdateChecklistValue(leadId: number | string) {
   return useMutation({
     mutationFn: ({ valueId, ...data }: { valueId: number } & Record<string, any>) =>
       client.patch(`/leads/${leadId}/checklist/${valueId}/update/`, data).then(r => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['lead', leadId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lead', leadId] });
+      qc.invalidateQueries({ queryKey: ['lead-timeline', leadId] });
+    },
   });
 }
 
-export function useLeadInteractions(leadId: number | string) {
+export function useLeadInteractions(
+  leadId: number | string | undefined,
+  options?: { enabled?: boolean },
+) {
+  const byDefault = !!leadId;
+  const enabled =
+    options?.enabled !== undefined ? options.enabled && !!leadId : byDefault;
   return useQuery<import('../types').LeadInteraction[]>({
     queryKey: ['lead-interactions', leadId],
     queryFn: () => client.get(`/leads/${leadId}/interactions/`).then(r => r.data),
+    enabled,
+  });
+}
+
+export type LeadTimelineFilters = {
+  /** Одно или несколько через запятую: interaction, stage, checklist */
+  kind?: string;
+  /** ID контакта из справочника — только взаимодействия с этим контактом и отметки чек-листа с ним */
+  contact?: number | null;
+};
+
+export function useLeadTimeline(leadId: number | string, filters?: LeadTimelineFilters) {
+  const kind = filters?.kind;
+  const contact = filters?.contact;
+  return useQuery<import('../types').LeadTimelineItem[]>({
+    queryKey: ['lead-timeline', leadId, kind ?? 'all', contact ?? 'all'],
+    queryFn: () => {
+      const params: Record<string, string> = {};
+      if (kind) params.kind = kind;
+      if (contact != null && contact !== undefined) params.contact = String(contact);
+      return client.get(`/leads/${leadId}/timeline/`, { params }).then(r => r.data);
+    },
     enabled: !!leadId,
   });
 }
@@ -381,6 +416,7 @@ export function useCreateLeadInteraction(leadId: number | string) {
       client.post(`/leads/${leadId}/interactions/`, data).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['lead-interactions', leadId] });
+      qc.invalidateQueries({ queryKey: ['lead-timeline', leadId] });
       qc.invalidateQueries({ queryKey: ['lead', leadId] });
     },
   });
@@ -392,6 +428,19 @@ export function useAdvanceLeadStage(leadId: number | string) {
     mutationFn: () => client.post(`/leads/${leadId}/advance-stage/`).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['lead', leadId] });
+      qc.invalidateQueries({ queryKey: ['lead-timeline', leadId] });
+      qc.invalidateQueries({ queryKey: ['leads'] });
+    },
+  });
+}
+
+export function useRetreatLeadStage(leadId: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.post(`/leads/${leadId}/retreat-stage/`).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lead', leadId] });
+      qc.invalidateQueries({ queryKey: ['lead-timeline', leadId] });
       qc.invalidateQueries({ queryKey: ['leads'] });
     },
   });
@@ -403,6 +452,7 @@ export function useRejectLead(leadId: number | string) {
     mutationFn: () => client.post(`/leads/${leadId}/reject/`).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['lead', leadId] });
+      qc.invalidateQueries({ queryKey: ['lead-timeline', leadId] });
       qc.invalidateQueries({ queryKey: ['leads'] });
     },
   });
@@ -511,6 +561,15 @@ export function useCreateContact() {
   return useMutation({
     mutationFn: (data: Record<string, any>) =>
       client.post('/contacts/', data).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['contacts'] }),
+  });
+}
+
+export function useUpdateContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: number } & Record<string, any>) =>
+      client.patch(`/contacts/${id}/`, data).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['contacts'] }),
   });
 }

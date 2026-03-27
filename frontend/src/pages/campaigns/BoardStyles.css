@@ -174,3 +174,17 @@
   color: #555;
   margin-top: 4px;
 }
+
+.kanban-card-dates {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #f0f0f0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #595959;
+}
+
+.kanban-card-dates-muted {
+  color: #8c8c8c;
+  margin-top: 2px;
+}

@@ -76,6 +76,45 @@ const initialData: CampaignFormData = {
 
 const STEP_TITLES = ['Основное', 'Программы', 'Организации', 'Распределение', 'Обзор'];
 
+/** Прогноз в лидах хранится по организации; при режиме «общий»/«по очередям» делим цель между организациями. */
+function buildForecastPayload(fd: CampaignFormData) {
+  const queueGoals =
+    fd.forecastDemandMode === 'per_queue'
+      ? Object.fromEntries(
+          Object.entries(fd.forecastDemandPerQueue).filter(([, v]) => v != null) as [string, number][],
+        )
+      : null;
+  return {
+    forecast_demand_mode: fd.forecastDemandMode,
+    forecast_total_goal: fd.forecastDemandMode === 'total' ? fd.forecastDemandTotal : null,
+    forecast_queue_goals: queueGoals,
+  };
+}
+
+function computeForecastDemandForLead(
+  fd: CampaignFormData,
+  orgName: string,
+): number | null {
+  const qNum = fd.orgQueueAssignments[orgName] || 1;
+  const dist = fd.orgDistribution[orgName];
+
+  if (fd.forecastDemandMode === 'total') {
+    const total = fd.forecastDemandTotal;
+    const n = fd.selectedExternalOrgs.length;
+    if (total == null || n === 0) return null;
+    return Math.round(total / n);
+  }
+  if (fd.forecastDemandMode === 'per_queue') {
+    const queueTotal = fd.forecastDemandPerQueue[qNum] ?? null;
+    const orgsInQueue = fd.selectedExternalOrgs.filter(
+      (o) => (fd.orgQueueAssignments[o.name] || 1) === qNum,
+    ).length;
+    if (queueTotal == null || orgsInQueue === 0) return null;
+    return Math.round(queueTotal / orgsInQueue);
+  }
+  return dist?.forecastDemand ?? null;
+}
+
 function getStepValid(fd: CampaignFormData): boolean[] {
   return [
     !!(fd.name.trim() && fd.federal_operator && fd.selectedFunnels.length > 0),
@@ -166,7 +205,8 @@ export default function CampaignCreatePage() {
       const allSame = demandValues.every((v) => v === demandValues[0]);
       if (allSame && leads.length === demandValues.length) {
         forecastDemandMode = 'total';
-        forecastDemandTotal = demandValues[0]!;
+        // Сумма по лидам (= n × доля, если все доли равны). При старом баге сумма завышена — поправьте поле и сохраните.
+        forecastDemandTotal = leads.reduce((s, l) => s + (l.forecast_demand ?? 0), 0);
       } else {
         const queueGroups: Record<number, number[]> = {};
         for (const lead of leads) {
@@ -180,7 +220,9 @@ export default function CampaignCreatePage() {
         if (samePerQueue && demandValues.length === leads.length) {
           forecastDemandMode = 'per_queue';
           for (const [qNum, vals] of Object.entries(queueGroups)) {
-            forecastDemandPerQueue[Number(qNum)] = vals[0] ?? null;
+            if (!vals.length) continue;
+            // Доля на лид × число лидов в очереди = цель по очереди в форме
+            forecastDemandPerQueue[Number(qNum)] = vals[0]! * vals.length;
           }
         } else {
           forecastDemandMode = 'per_org';
@@ -203,7 +245,16 @@ export default function CampaignCreatePage() {
             stage_deadlines: [],
           }))
         : initialData.queues,
-      regionData: [],
+      regionData: existingCampaign.campaign_regions?.map((cr) => {
+        const queueNumber = cr.queue
+          ? (existingCampaign.queues?.find((q) => q.id === cr.queue)?.queue_number ?? null)
+          : null;
+        return {
+          region_id: cr.region,
+          queue_number: queueNumber,
+          manager_id: cr.manager ?? null,
+        };
+      }) ?? [],
       selectedOrganizations: [],
       selectedExternalOrgs,
       orgQueueAssignments,
@@ -224,7 +275,7 @@ export default function CampaignCreatePage() {
   const campaignIdRef = useRef(campaignId);
   campaignIdRef.current = campaignId;
 
-  const nameTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const nameTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const updateFormData = (partial: Partial<CampaignFormData>) => {
     setFormData((prev) => ({ ...prev, ...partial }));
@@ -279,14 +330,7 @@ export default function CampaignCreatePage() {
       payload.lead_data = fd.selectedExternalOrgs.map((org) => {
         const dist = fd.orgDistribution[org.name];
         const qNum = fd.orgQueueAssignments[org.name] || 1;
-        let demand: number | null = null;
-        if (fd.forecastDemandMode === 'total') {
-          demand = fd.forecastDemandTotal;
-        } else if (fd.forecastDemandMode === 'per_queue') {
-          demand = fd.forecastDemandPerQueue[qNum] ?? null;
-        } else {
-          demand = dist?.forecastDemand ?? null;
-        }
+        const demand = computeForecastDemandForLead(fd, org.name);
         return {
           organization_name: org.full_name || org.name,
           funnel_id: fd.orgFunnelAssignments[org.name] || fd.selectedFunnels[0] || null,
@@ -295,6 +339,7 @@ export default function CampaignCreatePage() {
           forecast_demand: demand,
         };
       });
+      Object.assign(payload, buildForecastPayload(fd));
     }
     return payload;
   };
@@ -374,14 +419,7 @@ export default function CampaignCreatePage() {
       const leadData = formData.selectedExternalOrgs.map((org) => {
         const dist = formData.orgDistribution[org.name];
         const qNum = formData.orgQueueAssignments[org.name] || 1;
-        let demand: number | null = null;
-        if (formData.forecastDemandMode === 'total') {
-          demand = formData.forecastDemandTotal;
-        } else if (formData.forecastDemandMode === 'per_queue') {
-          demand = formData.forecastDemandPerQueue[qNum] ?? null;
-        } else {
-          demand = dist?.forecastDemand ?? null;
-        }
+        const demand = computeForecastDemandForLead(formData, org.name);
         return {
           organization_name: org.full_name || org.name,
           funnel_id: formData.orgFunnelAssignments[org.name] || formData.selectedFunnels[0],
@@ -410,6 +448,7 @@ export default function CampaignCreatePage() {
         organization_ids: formData.selectedOrganizations,
         lead_data: leadData,
         manager_assignments: formData.managerAssignments,
+        ...buildForecastPayload(formData),
       };
 
       let resultId: number;

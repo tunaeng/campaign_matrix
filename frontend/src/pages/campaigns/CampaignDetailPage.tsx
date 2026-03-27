@@ -2,12 +2,15 @@ import { useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Descriptions, Tag, Tabs, Table, Spin, Typography,
-  Button, Space, Statistic, Row, Col, Select, App, Progress, Segmented,
+  Button, Space, Statistic, Row, Col, Select, App, Progress, Segmented, InputNumber, Tooltip,
 } from 'antd';
-import { ArrowLeftOutlined, AppstoreOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, AppstoreOutlined, UnorderedListOutlined, EditOutlined } from '@ant-design/icons';
 import { useCampaign, useUpdateCampaign } from '../../api/hooks';
-import type { CampaignOrganization, Lead } from '../../types';
+import type { CampaignDetail, CampaignOrganization, Lead, LeadPrimaryContactBrief } from '../../types';
+import { daysSinceLastTouch } from '../../utils/leadTouch';
 import LeadBoardView from './LeadBoardView';
+import ContactPreviewModal from '../../components/ContactPreviewModal';
+import DemandQuotaPreview from '../../components/DemandQuotaPreview';
 
 const statusColors: Record<string, string> = {
   draft: 'default',
@@ -31,6 +34,13 @@ export default function CampaignDetailPage() {
   const { data: campaign, isLoading } = useCampaign(id!);
   const updateCampaign = useUpdateCampaign(id!);
   const [leadsView, setLeadsView] = useState<'table' | 'board'>('board');
+  const [orgContactPreview, setOrgContactPreview] = useState<{
+    contact: LeadPrimaryContactBrief;
+    leadId: number;
+    funnelName: string | null;
+  } | null>(null);
+  const [touchMinDays, setTouchMinDays] = useState<number | undefined>(undefined);
+  const [touchMaxDays, setTouchMaxDays] = useState<number | undefined>(undefined);
 
   const uniqueManagers = useMemo(() => {
     if (!campaign) return [];
@@ -50,6 +60,37 @@ export default function CampaignDetailPage() {
     return Array.from(managerSet.entries()).map(([id, name]) => ({ id, name }));
   }, [campaign]);
 
+  const leadsAfterTouchFilter = useMemo(() => {
+    const list = campaign?.leads ?? [];
+    if (touchMinDays === undefined && touchMaxDays === undefined) return list;
+    return list.filter((l) => {
+      const days = daysSinceLastTouch(l);
+      const effective = days === null ? null : Math.max(0, days);
+      if (touchMinDays !== undefined) {
+        if (effective !== null && effective < touchMinDays) return false;
+      }
+      if (touchMaxDays !== undefined) {
+        if (effective === null) return false;
+        if (effective > touchMaxDays) return false;
+      }
+      return true;
+    });
+  }, [campaign?.leads, touchMinDays, touchMaxDays]);
+
+  const campaignForLeadsView: CampaignDetail | undefined = useMemo(
+    () => (campaign ? { ...campaign, leads: leadsAfterTouchFilter } : undefined),
+    [campaign, leadsAfterTouchFilter],
+  );
+
+  const queuePeriod = useMemo(() => {
+    if (!campaign?.queues?.length) return { start: null as string | null, end: null as string | null };
+    const starts = campaign.queues.map(q => q.start_date).filter(Boolean) as string[];
+    const ends = campaign.queues.map(q => q.end_date).filter(Boolean) as string[];
+    const start = starts.length ? [...starts].sort()[0] : null;
+    const end = ends.length ? [...ends].sort().reverse()[0] : null;
+    return { start, end };
+  }, [campaign]);
+
   if (isLoading) return <div style={{ textAlign: 'center', paddingTop: 100 }}><Spin size="large" /></div>;
   if (!campaign) return <Typography.Text>Кампания не найдена</Typography.Text>;
 
@@ -63,6 +104,10 @@ export default function CampaignDetailPage() {
   };
 
   const leads = campaign.leads || [];
+  const leadsTabLabel =
+    leads.length === leadsAfterTouchFilter.length
+      ? `Лиды (${leads.length})`
+      : `Лиды (${leadsAfterTouchFilter.length}/${leads.length})`;
   const funnelNames = campaign.campaign_funnels?.map(f => f.funnel_name) || [];
 
   const programColumns = [
@@ -137,6 +182,38 @@ export default function CampaignDetailPage() {
 
   const orgColumns = [
     { title: 'Организация', dataIndex: 'organization_name', key: 'name' },
+    {
+      title: 'Основной контакт',
+      key: 'primary_contact',
+      width: 200,
+      render: (_: unknown, record: CampaignOrganization) => {
+        const p = record.primary_contact_preview;
+        if (!p?.contact) {
+          return <Typography.Text type="secondary">—</Typography.Text>;
+        }
+        const c = p.contact;
+        const label =
+          c.type === 'department'
+            ? (c.department_name || c.full_name || '—')
+            : (c.full_name || '—');
+        return (
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0, height: 'auto', whiteSpace: 'normal', textAlign: 'left' }}
+            onClick={() =>
+              setOrgContactPreview({
+                contact: c,
+                leadId: p.lead_id,
+                funnelName: p.funnel_name,
+              })
+            }
+          >
+            {label}
+          </Button>
+        );
+      },
+    },
     { title: 'Регион', dataIndex: 'organization_region', key: 'region', render: (v: string | null) => v || '—' },
     { title: 'Тип', dataIndex: 'organization_type', key: 'type' },
     {
@@ -152,9 +229,47 @@ export default function CampaignDetailPage() {
   const tabItems = [
     {
       key: 'leads',
-      label: `Лиды (${leads.length})`,
+      label: leadsTabLabel,
       children: (
         <div>
+          <Space wrap align="center" style={{ marginBottom: 12 }}>
+            <Tooltip title="Не менее столько дней с последнего взаимодействия. Лиды без касаний тоже учитываются.">
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>Касание ≥</Typography.Text>
+                <InputNumber
+                  min={0}
+                  value={touchMinDays}
+                  onChange={(v) => setTouchMinDays(v ?? undefined)}
+                  placeholder="дн."
+                  style={{ width: 80 }}
+                />
+              </span>
+            </Tooltip>
+            <Tooltip title="Не больше столько дней с последнего касания; только лиды с хотя бы одним взаимодействием.">
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>Касание ≤</Typography.Text>
+                <InputNumber
+                  min={0}
+                  value={touchMaxDays}
+                  onChange={(v) => setTouchMaxDays(v ?? undefined)}
+                  placeholder="дн."
+                  style={{ width: 80 }}
+                />
+              </span>
+            </Tooltip>
+            {(touchMinDays !== undefined || touchMaxDays !== undefined) && (
+              <Button
+                size="small"
+                type="link"
+                onClick={() => {
+                  setTouchMinDays(undefined);
+                  setTouchMaxDays(undefined);
+                }}
+              >
+                Сбросить
+              </Button>
+            )}
+          </Space>
           <div style={{ marginBottom: 12 }}>
             <Segmented
               value={leadsView}
@@ -166,17 +281,17 @@ export default function CampaignDetailPage() {
               size="small"
             />
           </div>
-          {leadsView === 'board' ? (
-            <LeadBoardView campaign={campaign} />
-          ) : (
+          {leadsView === 'board' && campaignForLeadsView ? (
+            <LeadBoardView campaign={campaignForLeadsView} />
+          ) : leadsView === 'table' ? (
             <Table
-              dataSource={leads}
+              dataSource={leadsAfterTouchFilter}
               columns={leadColumns}
               rowKey="id"
               size="small"
               pagination={{ pageSize: 20 }}
             />
-          )}
+          ) : null}
         </div>
       ),
     },
@@ -260,7 +375,7 @@ export default function CampaignDetailPage() {
       </Space>
 
       <Card style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
           <div>
             <Typography.Title level={4} style={{ marginBottom: 8 }}>
               {campaign.name}
@@ -284,11 +399,18 @@ export default function CampaignDetailPage() {
               ))}
             </Space>
           </div>
+          <Button
+            type="primary"
+            icon={<EditOutlined />}
+            onClick={() => navigate(`/campaigns/${id}/edit`)}
+          >
+            Редактировать
+          </Button>
         </div>
 
         <Row gutter={16} style={{ marginTop: 16 }}>
           <Col span={4}>
-            <Statistic title="Потребность" value={campaign.total_demand} suffix="чел." />
+            <Statistic title="Потребность (план, Σ)" value={campaign.total_demand} suffix="чел." />
           </Col>
           <Col span={4}>
             <Statistic title="Лидов" value={leads.length} />
@@ -304,6 +426,15 @@ export default function CampaignDetailPage() {
           </Col>
         </Row>
 
+        {campaign.demand_summary && (
+          <div style={{ marginTop: 16 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+              Потребность по лидам: план и квоты
+            </Typography.Text>
+            <DemandQuotaPreview breakdown={campaign.demand_summary} />
+          </div>
+        )}
+
         <Descriptions column={2} style={{ marginTop: 16 }} size="small">
           <Descriptions.Item label="Федеральный оператор">
             {campaign.federal_operator_name || '—'}
@@ -312,7 +443,15 @@ export default function CampaignDetailPage() {
             {campaign.created_by_name || '—'}
           </Descriptions.Item>
           <Descriptions.Item label="Создана">
-            {new Date(campaign.created_at).toLocaleDateString('ru-RU')}
+            {new Date(campaign.created_at).toLocaleString('ru-RU')}
+          </Descriptions.Item>
+          <Descriptions.Item label="Обновлена">
+            {new Date(campaign.updated_at).toLocaleString('ru-RU')}
+          </Descriptions.Item>
+          <Descriptions.Item label="Период (очереди)" span={2}>
+            {queuePeriod.start || queuePeriod.end
+              ? `${queuePeriod.start ? new Date(queuePeriod.start).toLocaleDateString('ru-RU') : '—'} — ${queuePeriod.end ? new Date(queuePeriod.end).toLocaleDateString('ru-RU') : '—'}`
+              : '—'}
           </Descriptions.Item>
         </Descriptions>
 
@@ -338,6 +477,14 @@ export default function CampaignDetailPage() {
       <Card>
         <Tabs items={tabItems} defaultActiveKey="leads" />
       </Card>
+
+      <ContactPreviewModal
+        open={!!orgContactPreview}
+        onClose={() => setOrgContactPreview(null)}
+        contact={orgContactPreview?.contact ?? null}
+        subtitle={orgContactPreview?.funnelName ? `Воронка: ${orgContactPreview.funnelName}` : null}
+        leadLink={orgContactPreview && id ? { campaignId: id, leadId: orgContactPreview.leadId } : null}
+      />
     </div>
   );
 }

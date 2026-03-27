@@ -171,6 +171,7 @@ export default function StepRegions({ data, onChange }: Props) {
                           name: `Очередь ${data.queues.length + 1}`,
                           start_date: null,
                           end_date: null,
+                          stage_deadlines: [],
                         },
                       ],
                     })

@@ -3,9 +3,10 @@ import {
   Typography, Table, Select, Button, Space, Tabs, Tooltip, Popover, Tag, Switch, Divider,
   Radio, InputNumber, Card,
 } from 'antd';
-import { ReloadOutlined, EditOutlined, UnorderedListOutlined, AppstoreOutlined } from '@ant-design/icons';
-import { useMe, useUsers, usePrograms, useFunnels, useExternalProfActivities } from '../../../api/hooks';
+import { ReloadOutlined, EditOutlined, UnorderedListOutlined, AppstoreOutlined, CheckCircleFilled, WarningFilled, QuestionCircleFilled } from '@ant-design/icons';
+import { useMe, useUsers, usePrograms, useFunnels, useExternalProfActivities, useDemandMatrix } from '../../../api/hooks';
 import type { CampaignFormData, ForecastDemandMode } from '../CampaignCreatePage';
+import type { DemandMatrix } from '../../../types';
 
 interface Props {
   data: CampaignFormData;
@@ -14,26 +15,85 @@ interface Props {
 
 const MAX_VISIBLE_TAGS = 3;
 
+type DemandStatus = 'demanded' | 'not_demanded' | 'unknown';
+
+function getDemandStatus(
+  programId: number,
+  orgRegion: string,
+  programProfession: Record<number, number>,
+  regionNameToId: Record<string, number>,
+  demandMatrix: DemandMatrix | undefined,
+): DemandStatus {
+  if (!demandMatrix) return 'unknown';
+  const regionId = regionNameToId[orgRegion];
+  if (!regionId) return 'unknown';
+  const profId = programProfession[programId];
+  if (!profId) return 'unknown';
+  const prof = demandMatrix.professions.find((pr) => pr.profession_id === profId);
+  if (!prof) return 'not_demanded';
+  return prof.regions[String(regionId)] === true ? 'demanded' : 'not_demanded';
+}
+
+const demandColors: Record<DemandStatus, string> = {
+  demanded: '#52c41a',
+  not_demanded: '#ff4d4f',
+  unknown: '#8c8c8c',
+};
+const demandBg: Record<DemandStatus, string> = {
+  demanded: '#f6ffed',
+  not_demanded: '#fff2f0',
+  unknown: '#fafafa',
+};
+const demandIcon: Record<DemandStatus, React.ReactNode> = {
+  demanded: <CheckCircleFilled style={{ color: '#52c41a', fontSize: 11 }} />,
+  not_demanded: <WarningFilled style={{ color: '#ff4d4f', fontSize: 11 }} />,
+  unknown: <QuestionCircleFilled style={{ color: '#8c8c8c', fontSize: 11 }} />,
+};
+const demandLabel: Record<DemandStatus, string> = {
+  demanded: 'Востребована',
+  not_demanded: 'Не востребована',
+  unknown: 'Нет данных',
+};
+
 function ProgramsCell({
-  orgName, programIds, allPrograms, onUpdate, expanded,
+  orgName, orgRegion, programIds, allPrograms, onUpdate, expanded,
+  programProfession, regionNameToId, demandMatrix,
 }: {
   orgName: string;
+  orgRegion: string;
   programIds: number[];
   allPrograms: { id: number; name: string }[];
   onUpdate: (orgName: string, ids: number[]) => void;
   expanded: boolean;
+  programProfession: Record<number, number>;
+  regionNameToId: Record<string, number>;
+  demandMatrix: DemandMatrix | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const selected = allPrograms.filter((p) => programIds.includes(p.id));
 
+  const selectOptions = allPrograms.map((p) => {
+    const status = getDemandStatus(p.id, orgRegion, programProfession, regionNameToId, demandMatrix);
+    return {
+      value: p.id,
+      label: (
+        <Space size={4}>
+          <Tooltip title={demandLabel[status]}>{demandIcon[status]}</Tooltip>
+          <span>{p.name}</span>
+        </Space>
+      ),
+      title: p.name,
+    };
+  });
+
   const editor = (
-    <div style={{ width: 400 }}>
+    <div style={{ width: 420 }}>
       <Select
         mode="multiple" style={{ width: '100%' }} size="small"
         value={programIds}
         onChange={(ids) => onUpdate(orgName, ids)}
-        options={allPrograms.map((p) => ({ value: p.id, label: p.name }))}
-        optionFilterProp="label" placeholder="Выберите программы" showSearch
+        options={selectOptions}
+        optionFilterProp="title" placeholder="Выберите программы" showSearch
       />
     </div>
   );
@@ -51,7 +111,17 @@ function ProgramsCell({
       <div>
         {selected.length === 0
           ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>не выбраны</Typography.Text>
-          : selected.map((p) => <div key={p.id} style={{ lineHeight: '22px', fontSize: 13 }}>• {p.name}</div>)
+          : selected.map((p) => {
+              const status = getDemandStatus(p.id, orgRegion, programProfession, regionNameToId, demandMatrix);
+              return (
+                <Tooltip key={p.id} title={demandLabel[status]}>
+                  <div style={{ lineHeight: '22px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    {demandIcon[status]}
+                    <span style={{ color: demandColors[status] }}>• {p.name}</span>
+                  </div>
+                </Tooltip>
+              );
+            })
         }
         {editBtn}
       </div>
@@ -62,13 +132,25 @@ function ProgramsCell({
   const hidden = selected.slice(MAX_VISIBLE_TAGS);
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
-      {visible.map((p) => (
-        <Tooltip key={p.id} title={p.name}>
-          <Tag style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 0 }}>
-            {p.name}
-          </Tag>
-        </Tooltip>
-      ))}
+      {visible.map((p) => {
+        const status = getDemandStatus(p.id, orgRegion, programProfession, regionNameToId, demandMatrix);
+        return (
+          <Tooltip key={p.id} title={`${p.name} — ${demandLabel[status]}`}>
+            <Tag
+              icon={demandIcon[status]}
+              style={{
+                maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                marginRight: 0,
+                borderColor: demandColors[status],
+                color: demandColors[status],
+                background: demandBg[status],
+              }}
+            >
+              {p.name}
+            </Tag>
+          </Tooltip>
+        );
+      })}
       {hidden.length > 0 && (
         <Tooltip title={<ul style={{ margin: 0, paddingLeft: 16 }}>{hidden.map((p) => <li key={p.id}>{p.name}</li>)}</ul>}>
           <Tag color="default" style={{ cursor: 'default', marginRight: 0 }}>+{hidden.length}</Tag>
@@ -85,6 +167,9 @@ export default function StepManagers({ data, onChange }: Props) {
   const { data: usersData } = useUsers();
   const { data: programsData } = usePrograms({ page_size: 1000 });
   const { data: funnelsData } = useFunnels({ is_active: true });
+  const { data: demandMatrix } = useDemandMatrix(
+    data.federal_operator ? { federal_operator: data.federal_operator } : undefined,
+  );
 
   const [queueManagerDraft, setQueueManagerDraft] = useState<Record<number, number | undefined>>({});
   // per-ФО prof_activity draft: key = `${queueNum}__${fedDistrict}`
@@ -92,6 +177,19 @@ export default function StepManagers({ data, onChange }: Props) {
   const [expandedView, setExpandedView] = useState(false);
 
   const allPrograms = programsData?.results || [];
+
+  const regionNameToId = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const r of (demandMatrix?.regions || [])) map[r.name] = r.id;
+    return map;
+  }, [demandMatrix]);
+
+  const programProfession = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const p of allPrograms) map[p.id] = p.profession;
+    return map;
+  }, [allPrograms]);
+
   const userOptions = (usersData?.results || []).map((u) => ({
     value: u.id,
     label: u.full_name || u.username,
@@ -226,10 +324,14 @@ export default function StepManagers({ data, onChange }: Props) {
         return (
           <ProgramsCell
             orgName={record.name}
+            orgRegion={record.region || ''}
             programIds={dist?.programIds ?? []}
             allPrograms={allPrograms}
             onUpdate={updateOrgPrograms}
             expanded={expandedView}
+            programProfession={programProfession}
+            regionNameToId={regionNameToId}
+            demandMatrix={demandMatrix}
           />
         );
       },
@@ -436,8 +538,10 @@ export default function StepManagers({ data, onChange }: Props) {
                 );
               })}
               {(() => {
-                const total = Object.values(data.forecastDemandPerQueue)
-                  .reduce((s, v) => s + (v || 0), 0);
+                const total = Object.values(data.forecastDemandPerQueue).reduce<number>(
+                  (s, v) => s + (v ?? 0),
+                  0,
+                );
                 return total > 0 ? (
                   <Typography.Text type="secondary" style={{ fontSize: 12, alignSelf: 'center' }}>
                     Итого: {total}

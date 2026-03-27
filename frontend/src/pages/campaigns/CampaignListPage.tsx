@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Table, Tag, Button, Space, Select, Typography, Input, Popconfirm, App, Segmented } from 'antd';
+import { Card, Table, Tag, Button, Space, Select, Typography, Input, Popconfirm, App, Segmented, Alert } from 'antd';
 import { PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, AppstoreOutlined, UnorderedListOutlined } from '@ant-design/icons';
 import { useCampaigns, useDeleteCampaign } from '../../api/hooks';
+import { getAxiosErrorMessage } from '../../api/errorMessage';
 import type { Campaign } from '../../types';
 import CampaignBoardView from './CampaignBoardView';
 
@@ -13,6 +14,11 @@ const statusColors: Record<string, string> = {
   completed: 'success',
 };
 
+function formatCampaignDate(iso?: string | null): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('ru-RU');
+}
+
 export default function CampaignListPage() {
   const navigate = useNavigate();
   const { message } = App.useApp();
@@ -22,7 +28,7 @@ export default function CampaignListPage() {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [ordering, setOrdering] = useState<string>();
-  const { data, isLoading } = useCampaigns({
+  const { data, isLoading, isError, error, refetch } = useCampaigns({
     status: statusFilter,
     search: search || undefined,
     page,
@@ -94,6 +100,32 @@ export default function CampaignListPage() {
         v && v.length > 0
           ? v.map((n, i) => <Tag key={i} color="blue" style={{ marginBottom: 2 }}>{n}</Tag>)
           : '—',
+    },
+    {
+      title: 'Даты',
+      key: 'dates',
+      width: 200,
+      render: (_: unknown, record: Campaign) => (
+        <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+          <div>Создана: {formatCampaignDate(record.created_at)}</div>
+          {record.queue_periods && record.queue_periods.length > 0
+            ? record.queue_periods.map((qp) => (
+                <div key={qp.queue_number}>
+                  {record.queue_periods!.length > 1
+                    ? <span style={{ color: '#8c8c8c' }}>{qp.name}: </span>
+                    : <span style={{ color: '#8c8c8c' }}>Период: </span>
+                  }
+                  {formatCampaignDate(qp.start_date)} — {formatCampaignDate(qp.end_date)}
+                </div>
+              ))
+            : (record.queue_period_start || record.queue_period_end) && (
+                <div>
+                  Период: {formatCampaignDate(record.queue_period_start)} — {formatCampaignDate(record.queue_period_end)}
+                </div>
+              )
+          }
+        </div>
+      ),
     },
     {
       title: '',
@@ -179,6 +211,20 @@ export default function CampaignListPage() {
         <CampaignBoardView />
       ) : (
       <Card>
+        {isError && (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Не удалось загрузить кампании"
+            description={getAxiosErrorMessage(error)}
+            action={
+              <Button size="small" type="primary" onClick={() => refetch()}>
+                Повторить
+              </Button>
+            }
+          />
+        )}
         <Space style={{ marginBottom: 16 }}>
           <Input
             placeholder="Поиск по названию"

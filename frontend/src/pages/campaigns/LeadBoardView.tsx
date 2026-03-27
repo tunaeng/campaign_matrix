@@ -1,14 +1,18 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Row, Col, Statistic, Card, Tag, Input, Select, Space, Progress, Tabs, Switch, Typography, Tooltip,
+  Row, Col, Statistic, Card, Tag, Input, Select, Space, Progress, Tabs, Switch, Typography,
 } from 'antd';
 import {
   TeamOutlined, CheckCircleOutlined, StopOutlined, SearchOutlined,
   ClockCircleOutlined, CheckOutlined, MessageOutlined, AimOutlined,
+  StarFilled,
 } from '@ant-design/icons';
 import { useFunnel } from '../../api/hooks';
-import type { CampaignDetail, Lead, FunnelStage } from '../../types';
+import type { CampaignDetail, Lead, FunnelStage, LeadPrimaryContactBrief } from '../../types';
+import ContactPreviewModal from '../../components/ContactPreviewModal';
+import LeadInteractionsHistoryModal from '../../components/LeadInteractionsHistoryModal';
+import DemandQuotaPreview, { leadToDemandBreakdown } from '../../components/DemandQuotaPreview';
 import './BoardStyles.css';
 
 interface Props {
@@ -36,12 +40,27 @@ function deadlineClass(deadlineDate: Date | null): string {
   return 'kanban-deadline-ok';
 }
 
+function primaryContactLabel(c: LeadPrimaryContactBrief): string {
+  if (c.type === 'department') {
+    return c.department_name || c.full_name || 'Контакт';
+  }
+  return c.full_name || 'Контакт';
+}
+
 export default function LeadBoardView({ campaign }: Props) {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [managerFilter, setManagerFilter] = useState<number>();
   const [activeQueue, setActiveQueue] = useState<string>('all');
-  const [showDetails, setShowDetails] = useState(false);
+  const [showDetails, setShowDetails] = useState(true);
+  const [contactPreview, setContactPreview] = useState<{
+    contact: LeadPrimaryContactBrief;
+    leadId: number;
+  } | null>(null);
+  const [interactionModalLead, setInteractionModalLead] = useState<{
+    id: number;
+    orgName: string;
+  } | null>(null);
 
   const funnelId = campaign.campaign_funnels?.[0]?.funnel;
   const { data: funnelDetail } = useFunnel(funnelId!);
@@ -228,15 +247,27 @@ export default function LeadBoardView({ campaign }: Props) {
                             <TeamOutlined /> {l.manager_name}
                           </span>
                         )}
-                        {l.forecast_demand != null && l.forecast_demand > 0 && (
-                          <span className="kanban-card-stat">
-                            <AimOutlined /> прогноз: {l.forecast_demand}
-                          </span>
-                        )}
+                      </div>
+                      <div style={{ marginTop: 4 }}>
+                        <DemandQuotaPreview breakdown={leadToDemandBreakdown(l)} />
                       </div>
 
                       {showDetails && (
                         <div className="kanban-card-details">
+                          {l.primary_contact && (
+                            <div
+                              style={{ marginBottom: 6 }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setContactPreview({ contact: l.primary_contact!, leadId: l.id });
+                              }}
+                            >
+                              <StarFilled style={{ color: '#faad14', fontSize: 11, marginRight: 4 }} />
+                              <Typography.Link style={{ fontSize: 11 }}>
+                                {primaryContactLabel(l.primary_contact)}
+                              </Typography.Link>
+                            </div>
+                          )}
                           {checklist.length > 0 && (
                             <div className="kanban-card-checklist">
                               {checklist.map((item, idx) => (
@@ -247,21 +278,39 @@ export default function LeadBoardView({ campaign }: Props) {
                               ))}
                             </div>
                           )}
-                          {lastInt && (
-                            <div className="kanban-card-interaction">
-                              <MessageOutlined style={{ fontSize: 10, color: '#1677ff' }} />
-                              <Tooltip title={lastInt.result || undefined}>
-                                <span>
+                          <div
+                            className="kanban-card-interaction"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setInteractionModalLead({ id: l.id, orgName: l.organization_name });
+                            }}
+                            style={{ cursor: 'pointer' }}
+                            role="presentation"
+                          >
+                            <MessageOutlined style={{ fontSize: 10, color: '#1677ff' }} />
+                            {lastInt ? (
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <Typography.Text style={{ fontSize: 11 }}>
                                   {lastInt.contact_person}
                                   {lastInt.date && <> · {new Date(lastInt.date).toLocaleDateString('ru-RU')}</>}
                                   {lastInt.channel && <> · {lastInt.channel}</>}
-                                </span>
-                              </Tooltip>
-                            </div>
-                          )}
-                          {checklist.length === 0 && !lastInt && (
-                            <div style={{ fontSize: 11, color: '#bbb', marginTop: 4 }}>Нет данных</div>
-                          )}
+                                </Typography.Text>
+                                {lastInt.result && (
+                                  <Typography.Paragraph
+                                    ellipsis={{ rows: 2, expandable: false }}
+                                    style={{ marginBottom: 0, marginTop: 4, fontSize: 11 }}
+                                    type="secondary"
+                                  >
+                                    {lastInt.result}
+                                  </Typography.Paragraph>
+                                )}
+                              </div>
+                            ) : (
+                              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                                Нет взаимодействий — нажмите для списка
+                              </Typography.Text>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -284,22 +333,140 @@ export default function LeadBoardView({ campaign }: Props) {
               <span className="kanban-column-count">{grouped[0].length}</span>
             </div>
             <div className="kanban-cards">
-              {grouped[0].map(l => (
-                <div
-                  key={l.id}
-                  className="kanban-card"
-                  onClick={() => navigate(`/campaigns/${campaign.id}/leads/${l.id}`)}
-                >
-                  <div className="kanban-card-title">{l.organization_name}</div>
-                  {l.organization_region && (
-                    <Tag style={{ fontSize: 11 }}>{l.organization_region}</Tag>
-                  )}
-                </div>
-              ))}
+              {grouped[0].map(l => {
+                const pct = l.checklist_progress
+                  ? (l.checklist_progress.total > 0
+                    ? Math.round((l.checklist_progress.completed / l.checklist_progress.total) * 100)
+                    : 0)
+                  : 0;
+                const checklist = l.checklist_summary || [];
+                const lastInt = l.last_interaction;
+                return (
+                  <div
+                    key={l.id}
+                    className="kanban-card"
+                    onClick={() => navigate(`/campaigns/${campaign.id}/leads/${l.id}`)}
+                  >
+                    <div className="kanban-card-title">{l.organization_name}</div>
+                    <div className="kanban-card-tags">
+                      {l.organization_region && (
+                        <Tag style={{ fontSize: 11, margin: 0 }}>{l.organization_region}</Tag>
+                      )}
+                    </div>
+                    {l.checklist_progress && l.checklist_progress.total > 0 && (
+                      <Progress
+                        percent={pct}
+                        size="small"
+                        format={() => `${l.checklist_progress!.completed}/${l.checklist_progress!.total}`}
+                        style={{ marginTop: 4 }}
+                      />
+                    )}
+                    <div className="kanban-card-stats">
+                      {l.manager_name && (
+                        <span className="kanban-card-stat">
+                          <TeamOutlined /> {l.manager_name}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                      <DemandQuotaPreview breakdown={leadToDemandBreakdown(l)} />
+                    </div>
+                    {showDetails && (
+                      <div className="kanban-card-details">
+                        {l.primary_contact && (
+                          <div
+                            style={{ marginBottom: 6 }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setContactPreview({ contact: l.primary_contact!, leadId: l.id });
+                            }}
+                          >
+                            <StarFilled style={{ color: '#faad14', fontSize: 11, marginRight: 4 }} />
+                            <Typography.Link style={{ fontSize: 11 }}>
+                              {primaryContactLabel(l.primary_contact)}
+                            </Typography.Link>
+                          </div>
+                        )}
+                        {checklist.length > 0 && (
+                          <div className="kanban-card-checklist">
+                            {checklist.map((item, idx) => (
+                              <div key={idx} className={`kanban-checklist-item ${item.done ? 'done' : ''}`}>
+                                <CheckOutlined style={{ fontSize: 10, color: item.done ? '#52c41a' : '#d9d9d9' }} />
+                                <span>{item.text}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div
+                          className="kanban-card-interaction"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setInteractionModalLead({ id: l.id, orgName: l.organization_name });
+                          }}
+                          style={{ cursor: 'pointer' }}
+                          role="presentation"
+                        >
+                          <MessageOutlined style={{ fontSize: 10, color: '#1677ff' }} />
+                          {lastInt ? (
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <Typography.Text style={{ fontSize: 11 }}>
+                                {lastInt.contact_person}
+                                {lastInt.date && <> · {new Date(lastInt.date).toLocaleDateString('ru-RU')}</>}
+                                {lastInt.channel && <> · {lastInt.channel}</>}
+                              </Typography.Text>
+                              {lastInt.result && (
+                                <Typography.Paragraph
+                                  ellipsis={{ rows: 2, expandable: false }}
+                                  style={{ marginBottom: 0, marginTop: 4, fontSize: 11 }}
+                                  type="secondary"
+                                >
+                                  {lastInt.result}
+                                </Typography.Paragraph>
+                              )}
+                            </div>
+                          ) : (
+                            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                              Нет взаимодействий — нажмите для списка
+                            </Typography.Text>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {!showDetails && l.primary_contact && (
+                      <div
+                        style={{ marginTop: 6, fontSize: 11 }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setContactPreview({ contact: l.primary_contact!, leadId: l.id });
+                        }}
+                      >
+                        <StarFilled style={{ color: '#faad14', marginRight: 4 }} />
+                        <Typography.Link style={{ fontSize: 11 }}>
+                          {primaryContactLabel(l.primary_contact)}
+                        </Typography.Link>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
       </div>
+
+      <ContactPreviewModal
+        open={!!contactPreview}
+        onClose={() => setContactPreview(null)}
+        contact={contactPreview?.contact ?? null}
+        leadLink={contactPreview ? { campaignId: campaign.id, leadId: contactPreview.leadId } : null}
+      />
+
+      <LeadInteractionsHistoryModal
+        open={!!interactionModalLead}
+        onClose={() => setInteractionModalLead(null)}
+        leadId={interactionModalLead?.id ?? null}
+        organizationName={interactionModalLead?.orgName}
+      />
     </div>
   );
 }

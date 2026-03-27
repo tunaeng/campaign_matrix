@@ -1,13 +1,14 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Table, Select, TreeSelect, Space, Typography, Input, Tag, Switch, Button,
-  DatePicker, InputNumber, Card, Divider, Collapse,
+  DatePicker, InputNumber, Card, Divider, Tooltip, Popover,
 } from 'antd';
-import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, WarningOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
   useExternalOrganizations, useExternalFedDistricts,
   useExternalOrgTypes, useExternalProfActivities, useFunnels, useFunnel,
+  useDemandMatrix, usePrograms,
 } from '../../../api/hooks';
 
 /** Добавить N рабочих дней к дате (пропуская сб/вс). */
@@ -41,6 +42,10 @@ export default function StepOrganizations({ data, onChange }: Props) {
   const { data: orgTypes } = useExternalOrgTypes();
   const { data: profActivitiesData } = useExternalProfActivities();
   const { data: funnelsData } = useFunnels({ is_active: true });
+  const { data: demandMatrix } = useDemandMatrix(
+    data.federal_operator ? { federal_operator: data.federal_operator } : undefined,
+  );
+  const { data: programsData } = usePrograms({ page_size: 1000 });
 
   const selectedFunnelId = data.selectedFunnels[0];
   const { data: funnelDetail } = useFunnel(selectedFunnelId || 0);
@@ -123,6 +128,37 @@ export default function StepOrganizations({ data, onChange }: Props) {
   const orgList = externalOrgs || [];
 
   const selectedOrgNames = new Set(data.selectedExternalOrgs.map(o => o.name));
+
+  // region name -> region id mapping from demand matrix
+  const regionNameToId = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const r of (demandMatrix?.regions || [])) {
+      map[r.name] = r.id;
+    }
+    return map;
+  }, [demandMatrix]);
+
+  // programId -> profession_id lookup
+  const programProfession = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const p of (programsData?.results || [])) {
+      map[p.id] = p.profession;
+    }
+    return map;
+  }, [programsData]);
+
+  // Returns list of selected program IDs that are NOT demanded in the given region name
+  const getNotDemandedPrograms = (regionName: string): number[] => {
+    const regionId = regionNameToId[regionName];
+    if (!regionId || !demandMatrix) return [];
+    return data.selectedPrograms.filter((pid) => {
+      const profId = programProfession[pid];
+      if (!profId) return false;
+      const prof = demandMatrix.professions.find((pr) => pr.profession_id === profId);
+      if (!prof) return true; // profession not in matrix → not demanded
+      return prof.regions[String(regionId)] !== true;
+    });
+  };
 
   const handleSelectOrg = (keys: React.Key[], rows: ExternalOrganization[]) => {
     const existing = new Map(data.selectedExternalOrgs.map(o => [o.name, o]));
@@ -230,6 +266,23 @@ export default function StepOrganizations({ data, onChange }: Props) {
       align: 'center' as const,
       render: (v: boolean) => v ? <Tag color="blue">Да</Tag> : null,
     },
+    {
+      title: 'Прогр.',
+      key: 'demand_org',
+      width: 90,
+      render: (_: any, record: ExternalOrganization) => {
+        if (!demandMatrix || data.selectedPrograms.length === 0) return null;
+        const notDemanded = getNotDemandedPrograms(record.region);
+        if (notDemanded.length === 0) {
+          return <Tooltip title="Все выбранные программы востребованы"><Tag color="success" style={{ marginRight: 0 }}>✓</Tag></Tooltip>;
+        }
+        return (
+          <Tooltip title={`${notDemanded.length} из ${data.selectedPrograms.length} программ не востребованы в регионе`}>
+            <Tag color="warning" style={{ marginRight: 0 }}>{notDemanded.length}/{data.selectedPrograms.length}</Tag>
+          </Tooltip>
+        );
+      },
+    },
   ];
 
   const selectedColumns = [
@@ -244,6 +297,37 @@ export default function StepOrganizations({ data, onChange }: Props) {
       dataIndex: 'region',
       key: 'region',
       width: 150,
+    },
+    {
+      title: 'Востребованность',
+      key: 'demand',
+      width: 160,
+      render: (_: any, record: ExternalOrganization) => {
+        if (!demandMatrix || data.selectedPrograms.length === 0) return null;
+        const notDemanded = getNotDemandedPrograms(record.region);
+        if (notDemanded.length === 0) {
+          return (
+            <Tag color="success">Все программы</Tag>
+          );
+        }
+        const notDemandedNames = notDemanded
+          .map((pid) => programsData?.results?.find((p) => p.id === pid)?.name)
+          .filter(Boolean);
+        return (
+          <Popover
+            title={<span><WarningOutlined style={{ color: '#faad14' }} /> Не востребованы в регионе</span>}
+            content={
+              <ul style={{ margin: 0, paddingLeft: 16, maxHeight: 200, overflow: 'auto', minWidth: 200 }}>
+                {notDemandedNames.map((n) => <li key={n}>{n}</li>)}
+              </ul>
+            }
+          >
+            <Tag color="warning" icon={<WarningOutlined />} style={{ cursor: 'pointer' }}>
+              {notDemanded.length} не востребов.
+            </Tag>
+          </Popover>
+        );
+      },
     },
     {
       title: 'Очередь',

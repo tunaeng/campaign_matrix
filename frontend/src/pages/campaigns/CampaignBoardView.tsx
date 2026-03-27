@@ -1,12 +1,20 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Row, Col, Statistic, Card, Tag, Input, Select, Space, Spin } from 'antd';
+import { Row, Col, Statistic, Card, Tag, Input, Select, Space, Spin, Alert, Button } from 'antd';
 import {
   TeamOutlined, RocketOutlined, AppstoreOutlined, AimOutlined, SearchOutlined,
+  CalendarOutlined,
 } from '@ant-design/icons';
 import { useCampaigns } from '../../api/hooks';
+import { getAxiosErrorMessage } from '../../api/errorMessage';
 import type { Campaign } from '../../types';
+import DemandQuotaPreview from '../../components/DemandQuotaPreview';
 import './BoardStyles.css';
+
+function formatRuDate(iso?: string | null): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('ru-RU');
+}
 
 const STATUS_COLUMNS: { key: Campaign['status']; label: string }[] = [
   { key: 'draft', label: 'Черновик' },
@@ -20,7 +28,7 @@ export default function CampaignBoardView() {
   const [search, setSearch] = useState('');
   const [foFilter, setFoFilter] = useState<string>();
 
-  const { data, isLoading } = useCampaigns({ page_size: 500 });
+  const { data, isLoading, isError, error, refetch } = useCampaigns({ page_size: 500 });
   const allCampaigns = data?.results || [];
 
   const filtered = useMemo(() => {
@@ -52,6 +60,22 @@ export default function CampaignBoardView() {
   const totalDemand = allCampaigns.reduce((s, c) => s + (c.total_demand || 0), 0);
 
   if (isLoading) return <div style={{ textAlign: 'center', paddingTop: 60 }}><Spin size="large" /></div>;
+
+  if (isError) {
+    return (
+      <Alert
+        type="error"
+        showIcon
+        message="Не удалось загрузить кампании"
+        description={getAxiosErrorMessage(error)}
+        action={
+          <Button size="small" type="primary" onClick={() => refetch()}>
+            Повторить
+          </Button>
+        }
+      />
+    );
+  }
 
   return (
     <div>
@@ -119,9 +143,41 @@ export default function CampaignBoardView() {
                     <span className="kanban-card-stat">
                       {c.regions_count ?? 0} рег.
                     </span>
-                    <span className="kanban-card-stat">
-                      <AimOutlined /> прогноз: {c.total_demand || 0}
-                    </span>
+                  </div>
+                  {c.demand_summary ? (
+                    <div style={{ marginTop: 6 }}>
+                      <DemandQuotaPreview breakdown={c.demand_summary} />
+                    </div>
+                  ) : (
+                    <div className="kanban-card-stats" style={{ marginTop: 6 }}>
+                      <span className="kanban-card-stat">
+                        <AimOutlined /> план: {c.total_demand || 0}
+                      </span>
+                    </div>
+                  )}
+                  <div className="kanban-card-dates">
+                    <div>
+                      <CalendarOutlined /> Создана: {formatRuDate(c.created_at)}
+                    </div>
+                    {c.queue_periods && c.queue_periods.length > 0
+                      ? c.queue_periods.map((qp) => (
+                          <div key={qp.queue_number}>
+                            {c.queue_periods!.length > 1
+                              ? <span>{qp.name}: </span>
+                              : <span>Период: </span>
+                            }
+                            {formatRuDate(qp.start_date)} — {formatRuDate(qp.end_date)}
+                          </div>
+                        ))
+                      : (c.queue_period_start || c.queue_period_end) && (
+                          <div>
+                            Период: {formatRuDate(c.queue_period_start)} — {formatRuDate(c.queue_period_end)}
+                          </div>
+                        )
+                    }
+                    <div className="kanban-card-dates-muted">
+                      Обновлена: {formatRuDate(c.updated_at)}
+                    </div>
                   </div>
                 </div>
               ))}

@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
-import { Table, Tag, Select, Space, Typography, Input, Switch } from 'antd';
-import { CheckCircleOutlined, ClockCircleOutlined, FileOutlined } from '@ant-design/icons';
-import { usePrograms, useFederalOperators, useProfessions } from '../../../api/hooks';
+import { useState, useEffect, useMemo } from 'react';
+import { Table, Tag, Select, Space, Typography, Input, Switch, Popover } from 'antd';
+import { CheckCircleOutlined, ClockCircleOutlined, FileOutlined, EnvironmentOutlined } from '@ant-design/icons';
+import { usePrograms, useFederalOperators, useProfessions, useDemandMatrix } from '../../../api/hooks';
 import type { CampaignFormData } from '../CampaignCreatePage';
 import type { Program } from '../../../types';
 
@@ -26,6 +26,7 @@ export default function StepPrograms({ data, onChange }: Props) {
   );
   const [professionFilter, setProfessionFilter] = useState<number | undefined>();
   const [demandedOnly, setDemandedOnly] = useState(false);
+  const [demandRegionFilter, setDemandRegionFilter] = useState<number[]>([]);
 
   useEffect(() => {
     if (data.federal_operator && !operatorFilter) {
@@ -41,7 +42,38 @@ export default function StepPrograms({ data, onChange }: Props) {
     demanded_only: demandedOnly || undefined,
   });
 
-  const allPrograms = programs?.results || [];
+  const { data: demandMatrix } = useDemandMatrix(
+    operatorFilter ? { federal_operator: operatorFilter } : undefined,
+  );
+
+  // profession_id -> { count, regionNames }
+  const demandByProfession = useMemo(() => {
+    if (!demandMatrix) return {} as Record<number, { count: number; regions: string[] }>;
+    const map: Record<number, { count: number; regions: string[] }> = {};
+    for (const prof of demandMatrix.professions) {
+      const demanded = demandMatrix.regions
+        .filter((r) => prof.regions[String(r.id)])
+        .map((r) => r.name);
+      map[prof.profession_id] = { count: demanded.length, regions: demanded };
+    }
+    return map;
+  }, [demandMatrix]);
+
+  const regionOptions = useMemo(
+    () => (demandMatrix?.regions || []).map((r) => ({ value: r.id, label: r.name })),
+    [demandMatrix],
+  );
+
+  let allPrograms = programs?.results || [];
+
+  // extra client-side filter: must be demanded in ALL selected regions
+  if (demandRegionFilter.length > 0) {
+    allPrograms = allPrograms.filter((p) => {
+      const prof = demandMatrix?.professions.find((pr) => pr.profession_id === p.profession);
+      if (!prof) return false;
+      return demandRegionFilter.every((rid) => prof.regions[String(rid)] === true);
+    });
+  }
 
   const columns = [
     {
@@ -83,6 +115,42 @@ export default function StepPrograms({ data, onChange }: Props) {
       key: 'hours',
       width: 80,
       render: (v: number | null) => v ?? '—',
+    },
+    {
+      title: (
+        <Space size={4}>
+          <EnvironmentOutlined />
+          <span>Востребованность</span>
+        </Space>
+      ),
+      key: 'demand',
+      width: 150,
+      render: (_: any, record: Program) => {
+        const info = demandByProfession[record.profession];
+        if (!demandMatrix) return <Tag color="default">—</Tag>;
+        if (!info || info.count === 0) {
+          return <Tag color="default">0 регионов</Tag>;
+        }
+        return (
+          <Popover
+            title="Регионы с востребованностью"
+            content={
+              <ul style={{ margin: 0, paddingLeft: 16, maxHeight: 240, overflow: 'auto', minWidth: 180 }}>
+                {info.regions.map((r) => <li key={r}>{r}</li>)}
+              </ul>
+            }
+            placement="left"
+          >
+            <Tag
+              color="green"
+              icon={<EnvironmentOutlined />}
+              style={{ cursor: 'pointer' }}
+            >
+              {info.count} рег.
+            </Tag>
+          </Popover>
+        );
+      },
     },
   ];
 
@@ -140,6 +208,20 @@ export default function StepPrograms({ data, onChange }: Props) {
             value: op.id,
             label: op.short_name?.trim() || op.name,
           }))}
+        />
+        <Select
+          mode="multiple"
+          placeholder="Востребована в регионах..."
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          style={{ minWidth: 240 }}
+          value={demandRegionFilter}
+          onChange={setDemandRegionFilter}
+          options={regionOptions}
+          maxTagCount={2}
+          maxTagPlaceholder={(omitted) => `+${omitted.length}`}
+          disabled={!demandMatrix}
         />
         <Space>
           <Switch checked={demandedOnly} onChange={setDemandedOnly} size="small" />

@@ -97,6 +97,15 @@ export interface Organization {
   interactions_count: number;
 }
 
+/** Сводка потребности по лидам кампании (суммы) */
+export interface CampaignDemandSummary {
+  plan: number;
+  declared_collected: number;
+  declared_quota: number;
+  list_collected: number;
+  list_quota: number;
+}
+
 export interface Campaign {
   id: number;
   name: string;
@@ -114,6 +123,13 @@ export interface Campaign {
   programs_count?: number;
   regions_count?: number;
   funnel_names?: string[];
+  /** Минимальная дата начала среди очередей кампании */
+  queue_period_start?: string | null;
+  /** Максимальная дата окончания (по этапам воронки) */
+  queue_period_end?: string | null;
+  /** Периоды по очередям */
+  queue_periods?: { name: string; queue_number: number; start_date: string; end_date: string | null }[];
+  demand_summary?: CampaignDemandSummary;
   created_at: string;
   updated_at: string;
 }
@@ -159,6 +175,27 @@ export interface CampaignRegion {
   manager_name: string | null;
 }
 
+/** Снимок основного контакта лида (API) */
+export interface LeadPrimaryContactBrief {
+  id: number;
+  full_name: string;
+  type: string;
+  type_display: string;
+  position: string;
+  phone: string;
+  email: string;
+  department_name: string;
+  messenger: string;
+  comment: string;
+}
+
+/** Превью лида с основным контактом по строке заказчика в кампании */
+export interface LeadPrimaryContactOrgPreview {
+  lead_id: number;
+  funnel_name: string | null;
+  contact: LeadPrimaryContactBrief;
+}
+
 export interface CampaignOrganization {
   id: number;
   campaign: number;
@@ -172,6 +209,7 @@ export interface CampaignOrganization {
   manager_name: string | null;
   demand_count: number;
   notes: string;
+  primary_contact_preview?: LeadPrimaryContactOrgPreview | null;
 }
 
 export interface DemandMatrix {
@@ -340,6 +378,31 @@ export interface LeadInteraction {
   created_at: string;
 }
 
+/** Элемент GET /leads/:id/timeline/ — взаимодействия, смена стадий, чек-лист */
+export type LeadTimelineItem =
+  | {
+      kind: 'interaction';
+      id: number;
+      at: string;
+      data: LeadInteraction;
+    }
+  | {
+      kind: 'stage';
+      id: number;
+      at: string;
+      summary: string;
+      created_by_name: string | null;
+    }
+  | {
+      kind: 'checklist';
+      id: number;
+      at: string;
+      summary: string;
+      created_by_name: string | null;
+      /** Для фильтра по контакту: пункт чек-листа с выбором из справочника */
+      contact_id?: number | null;
+    };
+
 export interface LeadStageDeadline {
   stage_id: number;
   stage_name: string;
@@ -366,6 +429,10 @@ export interface Lead {
   manager_name: string | null;
   forecast_demand: number | null;
   demand_count: number;
+  demand_collected_declared?: number;
+  demand_collected_list?: number;
+  demand_quota_declared?: number;
+  demand_quota_list?: number;
   notes: string;
   checklist_progress: { total: number; completed: number } | null;
   checklist_summary: { text: string; done: boolean }[];
@@ -375,6 +442,8 @@ export interface Lead {
     channel: string;
     result: string;
   } | null;
+  /** Основной контакт организации: не больше одного лида на организацию */
+  primary_contact?: LeadPrimaryContactBrief | null;
   created_at: string;
   updated_at: string;
 }
