@@ -6,14 +6,19 @@ import {
   WarningOutlined, RocketOutlined,
 } from '@ant-design/icons';
 import {
-  useCreateCampaign, useUpdateCampaign, useCampaign, useSyncExternalOrganizations,
+  useCreateCampaign, useUpdateCampaign, useCampaign,
 } from '../../api/hooks';
 import StepBasicInfo from './steps/StepBasicInfo';
 import StepPrograms from './steps/StepPrograms';
 import StepOrganizations from './steps/StepOrganizations';
+import StepRegions from './steps/StepRegions';
 import StepManagers from './steps/StepManagers';
 import StepReview from './steps/StepReview';
 import type { ExternalOrganization } from '../../types';
+
+export interface CampaignOrganizationOption extends ExternalOrganization {
+  id: number;
+}
 
 export interface QueueFormData {
   queue_number: number;
@@ -37,13 +42,27 @@ export type ForecastDemandMode = 'total' | 'per_org' | 'per_queue';
 export interface CampaignFormData {
   name: string;
   federal_operator: number | null;
+  federal_operator_ids: number[];
+  project: number | null;
+  acting_organization: number | null;
   hypothesis: string;
   selectedFunnels: number[];
   selectedPrograms: number[];
   queues: QueueFormData[];
-  regionData: { region_id: number; queue_number: number | null; manager_id: number | null }[];
+  regionData: {
+    region_id: number;
+    queue_number: number | null;
+    manager_id: number | null;
+    specialist_id?: number | null;
+    demand_quota?: number;
+    search_task?: string;
+  }[];
+  collectSearchTask: string;
+  hasCollectStage: boolean;
   selectedOrganizations: number[];
-  selectedExternalOrgs: ExternalOrganization[];
+  selectedExternalOrgs: CampaignOrganizationOption[];
+  federalOrgRegionSelections: Record<number, number[]>;
+  orgRegionForecast: Record<string, number | null>;
   orgQueueAssignments: Record<string, number>;
   orgFunnelAssignments: Record<string, number>;
   profActivityList: string[];
@@ -52,18 +71,26 @@ export interface CampaignFormData {
   forecastDemandMode: ForecastDemandMode;
   forecastDemandTotal: number | null;
   forecastDemandPerQueue: Record<number, number | null>;
+  tagIds: number[];
 }
 
 const initialData: CampaignFormData = {
   name: '',
   federal_operator: null,
+  federal_operator_ids: [],
+  project: null,
+  acting_organization: null,
   hypothesis: '',
   selectedFunnels: [],
   selectedPrograms: [],
   queues: [{ queue_number: 1, name: 'Очередь 1', start_date: null, end_date: null, stage_deadlines: [] }],
   regionData: [],
+  collectSearchTask: '',
+  hasCollectStage: false,
   selectedOrganizations: [],
   selectedExternalOrgs: [],
+  federalOrgRegionSelections: {},
+  orgRegionForecast: {},
   orgQueueAssignments: {},
   orgFunnelAssignments: {},
   profActivityList: [],
@@ -72,11 +99,14 @@ const initialData: CampaignFormData = {
   forecastDemandMode: 'total',
   forecastDemandTotal: null,
   forecastDemandPerQueue: {},
+  tagIds: [],
 };
 
-const STEP_TITLES = ['Основное', 'Программы', 'Организации', 'Распределение', 'Обзор'];
+function getStepTitles(hasCollectStage: boolean) {
+  return ['Основное', 'Программы', hasCollectStage ? 'Регионы' : 'Организации', 'Распределение', 'Обзор'];
+}
 
-/** Прогноз в лидах хранится по организации; при режиме «общий»/«по очередям» делим цель между организациями. */
+/** При режиме total/per_queue бэкенд сам делит цель между лидами. */
 function buildForecastPayload(fd: CampaignFormData) {
   const queueGoals =
     fd.forecastDemandMode === 'per_queue'
@@ -91,35 +121,72 @@ function buildForecastPayload(fd: CampaignFormData) {
   };
 }
 
-function computeForecastDemandForLead(
-  fd: CampaignFormData,
-  orgName: string,
-): number | null {
-  const qNum = fd.orgQueueAssignments[orgName] || 1;
-  const dist = fd.orgDistribution[orgName];
+function getLeadRegionIds(fd: CampaignFormData, org: CampaignOrganizationOption): Array<number | null> {
+  if (!org.federal_company) {
+    return [org.region_id ?? null];
+  }
+  const selected = fd.federalOrgRegionSelections?.[org.id] || [];
+  if (selected.length > 0) {
+    return Array.from(new Set(selected));
+  }
+  return [org.region_id ?? null];
+}
 
-  if (fd.forecastDemandMode === 'total') {
-    const total = fd.forecastDemandTotal;
-    const n = fd.selectedExternalOrgs.length;
-    if (total == null || n === 0) return null;
-    return Math.round(total / n);
+function leadForecastKey(orgId: number, regionId: number | null): string {
+  return `${orgId}:${regionId ?? 'null'}`;
+}
+
+function buildLeadData(fd: CampaignFormData, includePrograms: boolean) {
+  if (fd.hasCollectStage) {
+    return [];
   }
-  if (fd.forecastDemandMode === 'per_queue') {
-    const queueTotal = fd.forecastDemandPerQueue[qNum] ?? null;
-    const orgsInQueue = fd.selectedExternalOrgs.filter(
-      (o) => (fd.orgQueueAssignments[o.name] || 1) === qNum,
-    ).length;
-    if (queueTotal == null || orgsInQueue === 0) return null;
-    return Math.round(queueTotal / orgsInQueue);
+  const leadData: Array<Record<string, any>> = [];
+  for (const org of fd.selectedExternalOrgs) {
+    const dist = fd.orgDistribution[org.name];
+    const qNum = fd.orgQueueAssignments[org.name] || 1;
+    const funnelId = fd.orgFunnelAssignments[org.name] || fd.selectedFunnels[0] || null;
+    const regionIds = getLeadRegionIds(fd, org);
+
+    for (const regionId of regionIds) {
+      const perLeadForecast =
+        fd.forecastDemandMode === 'per_org'
+          ? (
+            fd.orgRegionForecast?.[leadForecastKey(org.id, regionId)] ??
+            dist?.forecastDemand ??
+            null
+          )
+          : null;
+      const lead: Record<string, any> = {
+        organization_id: org.id,
+        organization_name: org.full_name || org.name,
+        region_id: regionId,
+        funnel_id: funnelId,
+        queue_number: qNum,
+        manager_id: dist?.managerId || null,
+        forecast_demand: perLeadForecast,
+      };
+      if (includePrograms) {
+        lead.program_ids = dist?.programIds ?? fd.selectedPrograms;
+      }
+      leadData.push(lead);
+    }
   }
-  return dist?.forecastDemand ?? null;
+  return leadData;
 }
 
 function getStepValid(fd: CampaignFormData): boolean[] {
+  const hasFederalWithoutRegions = fd.selectedExternalOrgs.some(
+    (org) => org.federal_company && (fd.federalOrgRegionSelections?.[org.id]?.length ?? 0) === 0,
+  );
   return [
-    !!(fd.name.trim() && fd.federal_operator && fd.selectedFunnels.length > 0),
+    !!(fd.name.trim() && fd.federal_operator_ids.length > 0 && fd.selectedFunnels.length > 0),
     fd.selectedPrograms.length >= 1,
-    fd.selectedExternalOrgs.length >= 1,
+    fd.hasCollectStage
+      ? (
+        fd.regionData.length >= 1
+        && fd.regionData.every((r) => (r.search_task || '').trim().length > 0)
+      )
+      : (fd.selectedExternalOrgs.length >= 1 && !hasFederalWithoutRegions),
     true,
     true,
   ];
@@ -134,7 +201,6 @@ export default function CampaignCreatePage() {
   const isEditMode = !!editId;
 
   const createCampaign = useCreateCampaign();
-  const syncOrgs = useSyncExternalOrganizations();
 
   const [currentStep, setCurrentStep] = useState(0);
   const [formData, setFormData] = useState<CampaignFormData>(initialData);
@@ -159,40 +225,79 @@ export default function CampaignCreatePage() {
       queueIdToNumber[q.id] = q.queue_number;
     }
 
-    // Reconstruct selectedExternalOrgs from saved leads
+    // Reconstruct selected organizations and per-org settings from saved leads
     const leads = existingCampaign.leads ?? [];
-    const selectedExternalOrgs: ExternalOrganization[] = leads.map((lead) => ({
-      name: lead.organization_name,
-      full_name: lead.organization_name,
-      type: '',
-      region: lead.organization_region || '',
-      federal_company: false,
-      fed_district: '',
-      prof_activity: '',
-      projects: [],
-      is_active: true,
-      created_at: '',
-      updated_at: '',
-    }));
-
-    // Reconstruct per-org queue assignments
+    const selectedByOrgId = new Map<number, CampaignOrganizationOption>();
     const orgQueueAssignments: Record<string, number> = {};
+    const orgDistribution: Record<string, OrgDistributionItem> = {};
+    const forecastByOrgName: Record<string, number | null> = {};
+    const leadRegionsByOrg: Record<number, Set<number>> = {};
+    const orgRegionForecast: Record<string, number | null> = {};
+
     for (const lead of leads) {
-      orgQueueAssignments[lead.organization_name] =
-        lead.queue ? (queueIdToNumber[lead.queue] ?? 1) : 1;
+      if (!selectedByOrgId.has(lead.organization)) {
+        selectedByOrgId.set(lead.organization, {
+          id: lead.organization,
+          name: lead.organization_name,
+          full_name: lead.organization_name,
+          type: '',
+          region: lead.organization_region || '',
+          region_id: lead.region ?? null,
+          federal_company: false,
+          fed_district: '',
+          prof_activity: '',
+          projects: [],
+          is_active: true,
+          created_at: '',
+          updated_at: '',
+        });
+      }
+
+      if (lead.region != null) {
+        if (!leadRegionsByOrg[lead.organization]) {
+          leadRegionsByOrg[lead.organization] = new Set<number>();
+        }
+        leadRegionsByOrg[lead.organization]!.add(lead.region);
+      }
+      orgRegionForecast[leadForecastKey(lead.organization, lead.region ?? null)] = lead.forecast_demand ?? null;
+
+      if (orgQueueAssignments[lead.organization_name] == null) {
+        orgQueueAssignments[lead.organization_name] =
+          lead.queue ? (queueIdToNumber[lead.queue] ?? 1) : 1;
+      }
+
+      if (!(lead.organization_name in forecastByOrgName)) {
+        forecastByOrgName[lead.organization_name] = lead.forecast_demand ?? null;
+      }
+
+      if (!orgDistribution[lead.organization_name]) {
+        orgDistribution[lead.organization_name] = {
+          programIds: [...selectedPrograms],
+          managerId: lead.manager ?? null,
+          manuallySetManager: lead.manager !== null,
+          profActivity: null,
+          manuallySetProfActivity: false,
+          forecastDemand: null,
+        };
+      }
     }
 
-    // Reconstruct orgDistribution (manager per org; programs default to campaign programs)
-    const orgDistribution: Record<string, OrgDistributionItem> = {};
-    for (const lead of leads) {
-      orgDistribution[lead.organization_name] = {
-        programIds: [...selectedPrograms],
-        managerId: lead.manager ?? null,
-        manuallySetManager: lead.manager !== null,
-        profActivity: null,
-        manuallySetProfActivity: false,
-        forecastDemand: lead.forecast_demand ?? null,
-      };
+    const federalOrgRegionSelections: Record<number, number[]> = {};
+    for (const [orgIdStr, regionSet] of Object.entries(leadRegionsByOrg)) {
+      if (regionSet.size > 1) {
+        federalOrgRegionSelections[Number(orgIdStr)] = Array.from(regionSet);
+      }
+    }
+
+    const selectedExternalOrgs = Array.from(selectedByOrgId.values()).map((org) => ({
+      ...org,
+      federal_company: (federalOrgRegionSelections[org.id]?.length ?? 0) > 1,
+    }));
+
+    for (const [orgName, forecast] of Object.entries(forecastByOrgName)) {
+      if (orgDistribution[orgName]) {
+        orgDistribution[orgName].forecastDemand = forecast;
+      }
     }
 
     // Detect forecast demand mode from saved data
@@ -233,9 +338,16 @@ export default function CampaignCreatePage() {
     setFormData({
       name: existingCampaign.name,
       federal_operator: existingCampaign.federal_operator,
+      federal_operator_ids:
+        (existingCampaign.federal_operators && existingCampaign.federal_operators.length > 0)
+          ? existingCampaign.federal_operators
+          : (existingCampaign.federal_operator ? [existingCampaign.federal_operator] : []),
+      project: existingCampaign.project ?? null,
+      acting_organization: existingCampaign.acting_organization ?? null,
       hypothesis: existingCampaign.hypothesis || '',
       selectedFunnels: existingCampaign.campaign_funnels?.map((cf) => cf.funnel) ?? [],
       selectedPrograms,
+      tagIds: existingCampaign.tags ?? [],
       queues: existingCampaign.queues?.length
         ? existingCampaign.queues.map((q) => ({
             queue_number: q.queue_number,
@@ -253,10 +365,20 @@ export default function CampaignCreatePage() {
           region_id: cr.region,
           queue_number: queueNumber,
           manager_id: cr.manager ?? null,
+          specialist_id: cr.primary_contact_specialist ?? null,
+          demand_quota: cr.demand_quota ?? 0,
+          search_task: cr.search_task ?? '',
         };
       }) ?? [],
+      collectSearchTask: existingCampaign.collect_search_task ?? '',
+      hasCollectStage: !!(
+        (existingCampaign.collect_search_task && existingCampaign.collect_search_task.trim())
+        || (existingCampaign.campaign_regions?.length ?? 0) > 0
+      ),
       selectedOrganizations: [],
       selectedExternalOrgs,
+      federalOrgRegionSelections,
+      orgRegionForecast,
       orgQueueAssignments,
       orgFunnelAssignments: {},
       profActivityList: [],
@@ -294,6 +416,12 @@ export default function CampaignCreatePage() {
         const result = await createCampaign.mutateAsync({
           name: formData.name.trim(),
           status: 'draft',
+          federal_operator: formData.federal_operator,
+          federal_operator_ids: formData.federal_operator_ids,
+          project: formData.project,
+          acting_organization: formData.acting_organization,
+          collect_search_task: formData.collectSearchTask,
+          tags: formData.tagIds?.length ? formData.tagIds : undefined,
         });
         setCampaignId(result.id);
         setSaveStatus('saved');
@@ -311,10 +439,15 @@ export default function CampaignCreatePage() {
     const payload: Record<string, any> = {
       name: fd.name,
       federal_operator: fd.federal_operator,
+      federal_operator_ids: fd.federal_operator_ids,
+      project: fd.project,
+      acting_organization: fd.acting_organization,
+      collect_search_task: fd.collectSearchTask,
       hypothesis: fd.hypothesis,
     };
     if (upToStep >= 0) {
       payload.funnel_ids = fd.selectedFunnels;
+      payload.tags = fd.tagIds;
     }
     if (upToStep >= 1) {
       payload.program_ids = fd.selectedPrograms;
@@ -327,18 +460,12 @@ export default function CampaignCreatePage() {
         end_date: q.end_date,
         stage_deadlines: q.stage_deadlines,
       }));
-      payload.lead_data = fd.selectedExternalOrgs.map((org) => {
-        const dist = fd.orgDistribution[org.name];
-        const qNum = fd.orgQueueAssignments[org.name] || 1;
-        const demand = computeForecastDemandForLead(fd, org.name);
-        return {
-          organization_name: org.full_name || org.name,
-          funnel_id: fd.orgFunnelAssignments[org.name] || fd.selectedFunnels[0] || null,
-          queue_number: qNum,
-          manager_id: dist?.managerId || null,
-          forecast_demand: demand,
-        };
-      });
+      if (fd.hasCollectStage) {
+        payload.region_data = fd.regionData;
+        payload.lead_data = [];
+      } else {
+        payload.lead_data = buildLeadData(fd, false);
+      }
       Object.assign(payload, buildForecastPayload(fd));
     }
     return payload;
@@ -347,15 +474,6 @@ export default function CampaignCreatePage() {
   const saveCurrentStep = async () => {
     if (!campaignIdRef.current) return;
     const fd = formDataRef.current;
-
-    // When leaving step 2 (Organizations), sync external orgs to DB first
-    if (currentStep === 2 && fd.selectedExternalOrgs.length > 0) {
-      try {
-        await syncOrgs.mutateAsync({ organizations: fd.selectedExternalOrgs });
-      } catch {
-        // Non-fatal — lead_data uses organization_name fallback
-      }
-    }
 
     const payload = buildPatchPayload(fd, currentStep);
     setSaveStatus('saving');
@@ -380,7 +498,8 @@ export default function CampaignCreatePage() {
     } catch {
       return;
     }
-    setCurrentStep((s) => Math.min(s + 1, STEP_TITLES.length - 1));
+    const stepTitles = getStepTitles(formDataRef.current.hasCollectStage);
+    setCurrentStep((s) => Math.min(s + 1, stepTitles.length - 1));
   };
 
   const handlePrev = () => {
@@ -411,29 +530,17 @@ export default function CampaignCreatePage() {
     }
     setSubmitting(true);
     try {
-      // Sync external orgs to local DB first
-      if (formData.selectedExternalOrgs.length > 0) {
-        await syncOrgs.mutateAsync({ organizations: formData.selectedExternalOrgs });
-      }
-
-      const leadData = formData.selectedExternalOrgs.map((org) => {
-        const dist = formData.orgDistribution[org.name];
-        const qNum = formData.orgQueueAssignments[org.name] || 1;
-        const demand = computeForecastDemandForLead(formData, org.name);
-        return {
-          organization_name: org.full_name || org.name,
-          funnel_id: formData.orgFunnelAssignments[org.name] || formData.selectedFunnels[0],
-          queue_number: qNum,
-          manager_id: dist?.managerId || null,
-          program_ids: dist?.programIds ?? formData.selectedPrograms,
-          forecast_demand: demand,
-        };
-      });
+      const leadData = buildLeadData(formData, true);
 
       const payload = {
         name: formData.name,
         federal_operator: formData.federal_operator,
+        federal_operator_ids: formData.federal_operator_ids,
+        project: formData.project,
+        acting_organization: formData.acting_organization,
+        collect_search_task: formData.collectSearchTask,
         hypothesis: formData.hypothesis,
+        tags: formData.tagIds,
         status: 'active',
         funnel_ids: formData.selectedFunnels,
         queues: formData.queues.map((q) => ({
@@ -473,10 +580,13 @@ export default function CampaignCreatePage() {
   const stepComponents = [
     <StepBasicInfo data={formData} onChange={updateFormData} />,
     <StepPrograms data={formData} onChange={updateFormData} />,
-    <StepOrganizations data={formData} onChange={updateFormData} />,
+    formData.hasCollectStage
+      ? <StepRegions data={formData} onChange={updateFormData} />
+      : <StepOrganizations data={formData} onChange={updateFormData} />,
     <StepManagers data={formData} onChange={updateFormData} />,
     <StepReview data={formData} />,
   ];
+  const stepTitles = getStepTitles(formData.hasCollectStage);
 
   const SaveIndicator = () => {
     if (saveStatus === 'saving') {
@@ -534,7 +644,7 @@ export default function CampaignCreatePage() {
           size="small"
           onChange={handleStepClick}
           style={{ cursor: 'pointer' }}
-          items={STEP_TITLES.map((title, idx) => {
+          items={stepTitles.map((title, idx) => {
             const valid = getStepValid(formData);
             const needsCheck = idx <= 2; // steps 0-2 have min requirements
             const isDone = needsCheck && valid[idx];
@@ -561,14 +671,18 @@ export default function CampaignCreatePage() {
             Назад
           </Button>
           <Space>
-            {currentStep < STEP_TITLES.length - 1 ? (
+            {currentStep < stepTitles.length - 1 ? (
               <Button type="primary" onClick={handleNext}>
                 Далее
               </Button>
             ) : (() => {
                 const valid = getStepValid(formData);
                 const allValid = valid[0] && valid[1] && valid[2];
-                const missingSteps = ['Основное (название, ФО, воронка)', 'Программы (мин. 1)', 'Организации (мин. 1)']
+                const missingSteps = [
+                  'Основное (название, ФО, воронка)',
+                  'Программы (мин. 1)',
+                  formData.hasCollectStage ? 'Регионы (мин. 1 + задание на поиск)' : 'Организации (мин. 1)',
+                ]
                   .filter((_, i) => !valid[i]);
                 return (
                   <Tooltip

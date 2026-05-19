@@ -6,8 +6,13 @@ import {
   TableOutlined,
   EnvironmentOutlined,
   AppstoreOutlined,
+  TeamOutlined,
   LogoutOutlined,
   FunnelPlotOutlined,
+  ApartmentOutlined,
+  HistoryOutlined,
+  TagsOutlined,
+  ProjectOutlined,
 } from '@ant-design/icons';
 import { useMe } from '../api/hooks';
 
@@ -26,6 +31,11 @@ export default function AppLayout() {
 
   const selectedMenuKey = (() => {
     if (location.pathname.startsWith('/campaigns/')) return '/campaigns';
+    if (location.pathname.startsWith('/workload-dashboard')) return '/workload-dashboard';
+    if (location.pathname.startsWith('/subfunnel-workspace')) return '/subfunnel-workspace';
+    if (location.pathname.startsWith('/communications/')) return '/communications/history';
+    if (location.pathname.startsWith('/contacts/')) return '/contacts';
+    if (location.pathname.startsWith('/projects/')) return '/projects';
     if (location.pathname.startsWith('/funnels/')) return '/funnels';
     return location.pathname;
   })();
@@ -42,9 +52,51 @@ export default function AppLayout() {
       label: 'Новая кампания',
     },
     {
+      key: '/workload-dashboard',
+      icon: <FundProjectionScreenOutlined />,
+      label: 'Загрузка команд',
+    },
+    {
+      key: '/subfunnel-workspace',
+      icon: <FunnelPlotOutlined />,
+      label: 'Задачи',
+    },
+    {
       key: '/funnels',
       icon: <FunnelPlotOutlined />,
       label: 'Воронки',
+    },
+    {
+      key: '/directories',
+      icon: <TeamOutlined />,
+      label: 'Справочники контрагентов',
+      children: [
+        {
+          key: '/organizations',
+          icon: <ApartmentOutlined />,
+          label: 'База организаций',
+        },
+        {
+          key: '/contacts',
+          icon: <TeamOutlined />,
+          label: 'База контактов',
+        },
+        {
+          key: '/projects',
+          icon: <ProjectOutlined />,
+          label: 'Проекты',
+        },
+        {
+          key: '/communications/history',
+          icon: <HistoryOutlined />,
+          label: 'История коммуникаций',
+        },
+        {
+          key: '/tags',
+          icon: <TagsOutlined />,
+          label: 'Теги',
+        },
+      ],
     },
     {
       key: '/demand-professions',
@@ -93,7 +145,7 @@ export default function AppLayout() {
         <Menu
           mode="inline"
           selectedKeys={[selectedMenuKey]}
-          defaultOpenKeys={['/demand-professions']}
+          defaultOpenKeys={['/demand-professions', '/directories']}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
           style={{ borderRight: 0, marginTop: 8 }}

@@ -12,6 +12,20 @@ export function getAxiosErrorMessage(error: unknown): string {
     if (typeof det === 'string') return det;
     if (Array.isArray(det)) return det.map(String).join(' ');
   }
+  if (d) {
+    const parts: string[] = [];
+    for (const [key, value] of Object.entries(d)) {
+      if (key === 'detail') continue;
+      if (Array.isArray(value)) {
+        parts.push(`${key}: ${value.map(String).join(' ')}`);
+      } else if (typeof value === 'string') {
+        parts.push(`${key}: ${value}`);
+      } else if (value != null) {
+        parts.push(`${key}: ${String(value)}`);
+      }
+    }
+    if (parts.length) return parts.join(' | ');
+  }
   const st = ax.response?.status;
   if (st === 401) return 'Требуется вход.';
   if (st === 403) return 'Нет доступа.';

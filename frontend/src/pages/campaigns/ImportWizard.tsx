@@ -21,6 +21,8 @@ import {
   useProfessions,
   useFederalOperators,
 } from '../../api/hooks';
+import client from '../../api/client';
+import { getAxiosErrorMessage } from '../../api/errorMessage';
 import type {
   ImportPreviewResult,
   ImportPreviewInvalidRegion,
@@ -109,6 +111,22 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
     } catch (err: any) {
       const detail = err?.response?.data?.detail || 'Ошибка анализа файла';
       message.error(detail);
+    }
+  };
+
+  const downloadTemplate = async () => {
+    try {
+      const res = await client.get('/demand-matrix/import/template/', {
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'demand_matrix_import_template_wide.xlsx';
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      message.error(`Не удалось скачать шаблон: ${getAxiosErrorMessage(err)}`);
     }
   };
 
@@ -266,6 +284,9 @@ export default function ImportWizard({ onDone }: { onDone?: () => void }) {
               Проверить файл
             </Button>
           </Upload>
+          <Button size="small" type="link" onClick={downloadTemplate} style={{ paddingLeft: 0 }}>
+            Скачать шаблон
+          </Button>
         </div>
       )}
 

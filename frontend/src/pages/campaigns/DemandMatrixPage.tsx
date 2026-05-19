@@ -19,7 +19,7 @@ import {
   Modal,
 } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
-import { useDemandMatrix, useFederalDistricts, useRegions, useMe } from '../../api/hooks';
+import { useDemandMatrix, useFederalDistricts, useRegions } from '../../api/hooks';
 import type { DefaultOptionType } from 'antd/es/cascader';
 import ImportWizard from './ImportWizard';
 
@@ -103,8 +103,6 @@ export default function DemandMatrixPage() {
   const [deferMatrixRender, setDeferMatrixRender] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
 
-  const { data: me } = useMe();
-  const isAdmin = me?.role === 'admin';
   const { data: districts } = useFederalDistricts();
   const { data: regionsData } = useRegions();
   const { data: matrix, isLoading } = useDemandMatrix({
@@ -600,16 +598,14 @@ export default function DemandMatrixPage() {
                 <Col>
                   <Statistic title="Всего востребовано" value={totalDemanded} suffix="связей" valueStyle={{ fontSize: 18 }} />
                 </Col>
-                {isAdmin && (
-                  <Col style={{ marginLeft: 'auto' }}>
-                    <Button icon={<UploadOutlined />} onClick={() => setImportModalOpen(true)}>
-                      Импорт
-                    </Button>
-                  </Col>
-                )}
+                <Col style={{ marginLeft: 'auto' }}>
+                  <Button icon={<UploadOutlined />} onClick={() => setImportModalOpen(true)}>
+                    Импорт
+                  </Button>
+                </Col>
               </Row>
             )}
-            {!matrixForRender && isAdmin && (
+            {!matrixForRender && (
               <div>
                 <Button icon={<UploadOutlined />} onClick={() => setImportModalOpen(true)}>
                   Импорт
@@ -617,18 +613,16 @@ export default function DemandMatrixPage() {
               </div>
             )}
 
-          {isAdmin && (
-            <Modal
-              title="Импорт востребованности"
-              open={importModalOpen}
-              onCancel={() => setImportModalOpen(false)}
-              footer={null}
-              width={640}
-              destroyOnClose
-            >
-              <ImportWizard onDone={() => setImportModalOpen(false)} />
-            </Modal>
-          )}
+          <Modal
+            title="Импорт востребованности"
+            open={importModalOpen}
+            onCancel={() => setImportModalOpen(false)}
+            footer={null}
+            width={640}
+            destroyOnClose
+          >
+            <ImportWizard onDone={() => setImportModalOpen(false)} />
+          </Modal>
         </div>
       </Card>
 

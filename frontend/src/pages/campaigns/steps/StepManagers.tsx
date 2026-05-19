@@ -4,7 +4,9 @@ import {
   Radio, InputNumber, Card,
 } from 'antd';
 import { ReloadOutlined, EditOutlined, UnorderedListOutlined, AppstoreOutlined, CheckCircleFilled, WarningFilled, QuestionCircleFilled } from '@ant-design/icons';
-import { useMe, useUsers, usePrograms, useFunnels, useExternalProfActivities, useDemandMatrix } from '../../../api/hooks';
+import {
+  useMe, useUsers, usePrograms, useFunnels, useExternalProfActivities, useDemandMatrix, useRegions,
+} from '../../../api/hooks';
 import type { CampaignFormData, ForecastDemandMode } from '../CampaignCreatePage';
 import type { DemandMatrix } from '../../../types';
 
@@ -16,6 +18,10 @@ interface Props {
 const MAX_VISIBLE_TAGS = 3;
 
 type DemandStatus = 'demanded' | 'not_demanded' | 'unknown';
+
+function leadForecastKey(orgId: number, regionId: number | null): string {
+  return `${orgId}:${regionId ?? 'null'}`;
+}
 
 function getDemandStatus(
   programId: number,
@@ -167,6 +173,7 @@ export default function StepManagers({ data, onChange }: Props) {
   const { data: usersData } = useUsers();
   const { data: programsData } = usePrograms({ page_size: 1000 });
   const { data: funnelsData } = useFunnels({ is_active: true });
+  const { data: regionsData } = useRegions({ page_size: 500 });
   const { data: demandMatrix } = useDemandMatrix(
     data.federal_operator ? { federal_operator: data.federal_operator } : undefined,
   );
@@ -242,8 +249,100 @@ export default function StepManagers({ data, onChange }: Props) {
     return map;
   }, [data.selectedExternalOrgs, data.orgQueueAssignments, data.queues]);
 
-  const updateOrgForecast = (orgName: string, value: number | null) =>
-    onChange({ orgDistribution: { ...data.orgDistribution, [orgName]: { ...data.orgDistribution[orgName], forecastDemand: value } } });
+  const regionNameById = useMemo(() => {
+    const map: Record<number, string> = {};
+    for (const r of (regionsData?.results || [])) {
+      map[r.id] = r.name;
+    }
+    return map;
+  }, [regionsData]);
+
+  const getOrgLeadRegionIds = (org: any): number[] => {
+    const selected = data.federalOrgRegionSelections?.[org.id] || [];
+    if (selected.length > 0) return selected;
+    return org.region_id != null ? [org.region_id] : [];
+  };
+
+  const getOrgLeadCount = (org: any) => Math.max(getOrgLeadRegionIds(org).length, 1);
+
+  const getOrgLeadRegionNames = (org: any): string[] => {
+    const ids = getOrgLeadRegionIds(org);
+    if (ids.length > 0) {
+      return ids.map((id) => regionNameById[id] || `Регион #${id}`);
+    }
+    return org.region ? [org.region] : [];
+  };
+
+  const leadsCountByQueue = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const q of data.queues) {
+      const orgs = orgsByQueue[q.queue_number] || [];
+      map[q.queue_number] = orgs.reduce((sum, org) => sum + getOrgLeadCount(org), 0);
+    }
+    return map;
+  }, [data.queues, orgsByQueue, data.federalOrgRegionSelections]);
+
+  const totalLeadsCount = useMemo(
+    () => data.selectedExternalOrgs.reduce((sum, org) => sum + getOrgLeadCount(org), 0),
+    [data.selectedExternalOrgs, data.federalOrgRegionSelections],
+  );
+
+  useEffect(() => {
+    if (data.forecastDemandMode !== 'per_org') return;
+    const next = { ...(data.orgRegionForecast || {}) };
+    let changed = false;
+    const keep = new Set<string>();
+
+    for (const org of data.selectedExternalOrgs) {
+      const regionIds = getOrgLeadRegionIds(org);
+      if (regionIds.length === 0) {
+        const k = leadForecastKey(org.id, null);
+        keep.add(k);
+        if (!(k in next)) {
+          next[k] = data.orgDistribution[org.name]?.forecastDemand ?? null;
+          changed = true;
+        }
+        continue;
+      }
+      for (const regionId of regionIds) {
+        const k = leadForecastKey(org.id, regionId);
+        keep.add(k);
+        if (!(k in next)) {
+          next[k] = data.orgDistribution[org.name]?.forecastDemand ?? null;
+          changed = true;
+        }
+      }
+    }
+
+    for (const key of Object.keys(next)) {
+      if (!keep.has(key)) {
+        delete next[key];
+        changed = true;
+      }
+    }
+
+    if (changed) onChange({ orgRegionForecast: next });
+  }, [
+    data.forecastDemandMode,
+    data.selectedExternalOrgs,
+    data.federalOrgRegionSelections,
+    data.orgDistribution,
+  ]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const updateLeadForecast = (orgId: number, regionId: number | null, value: number | null) => {
+    onChange({
+      orgRegionForecast: {
+        ...(data.orgRegionForecast || {}),
+        [leadForecastKey(orgId, regionId)]: value,
+      },
+    });
+  };
+
+  const getLeadForecast = (org: any, regionId: number | null) => (
+    data.orgRegionForecast?.[leadForecastKey(org.id, regionId)] ??
+    data.orgDistribution[org.name]?.forecastDemand ??
+    null
+  );
 
   const updateOrgPrograms = (orgName: string, programIds: number[]) =>
     onChange({ orgDistribution: { ...data.orgDistribution, [orgName]: { ...data.orgDistribution[orgName], programIds } } });
@@ -287,6 +386,24 @@ export default function StepManagers({ data, onChange }: Props) {
     const cols: any[] = [
       { title: 'Организация', dataIndex: 'name', key: 'name', ellipsis: false },
       { title: 'Регион', dataIndex: 'region', key: 'region', width: 140, ellipsis: true },
+      {
+        title: 'Регионы лидов',
+        key: 'leadRegions',
+        width: 240,
+        render: (_: any, record: any) => {
+          const names = getOrgLeadRegionNames(record);
+          if (names.length === 0) return <Typography.Text type="secondary">—</Typography.Text>;
+          return (
+            <Space size={[4, 4]} wrap>
+              {names.map((n) => (
+                <Tag key={`${record.id}-${n}`} color="geekblue" style={{ marginRight: 0 }}>
+                  {n}
+                </Tag>
+              ))}
+            </Space>
+          );
+        },
+      },
     ];
 
     if (hasFederalFunnel) {
@@ -365,16 +482,39 @@ export default function StepManagers({ data, onChange }: Props) {
       cols.push({
         title: 'Прогноз',
         key: 'forecast',
-        width: 120,
+        width: 260,
         render: (_: any, record: any) => {
-          const dist = data.orgDistribution[record.name];
+          const regionIds = getOrgLeadRegionIds(record);
+          if (regionIds.length <= 1) {
+            const singleRegionId = regionIds[0] ?? null;
+            return (
+              <InputNumber
+                size="small" style={{ width: '100%' }}
+                min={0} placeholder="0"
+                value={getLeadForecast(record, singleRegionId) ?? undefined}
+                onChange={(v) => updateLeadForecast(record.id, singleRegionId, v)}
+              />
+            );
+          }
           return (
-            <InputNumber
-              size="small" style={{ width: '100%' }}
-              min={0} placeholder="0"
-              value={dist?.forecastDemand ?? undefined}
-              onChange={(v) => updateOrgForecast(record.name, v)}
-            />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {regionIds.map((regionId) => {
+                const regionName = regionNameById[regionId] || `Регион #${regionId}`;
+                return (
+                  <Space key={`${record.id}-${regionId}`} size={6} align="center">
+                    <Typography.Text style={{ width: 140, fontSize: 12 }}>{regionName}</Typography.Text>
+                    <InputNumber
+                      size="small"
+                      style={{ width: 100 }}
+                      min={0}
+                      placeholder="0"
+                      value={getLeadForecast(record, regionId) ?? undefined}
+                      onChange={(v) => updateLeadForecast(record.id, regionId, v)}
+                    />
+                  </Space>
+                );
+              })}
+            </div>
           );
         },
       });
@@ -453,9 +593,117 @@ export default function StepManagers({ data, onChange }: Props) {
 
   const tabItems = data.queues.map((q) => ({
     key: String(q.queue_number),
-    label: `${q.name} (${(orgsByQueue[q.queue_number] || []).length})`,
+    label: `${q.name} (${(orgsByQueue[q.queue_number] || []).length} орг. / ${leadsCountByQueue[q.queue_number] || 0} лид.)`,
     children: renderQueueContent(q.queue_number),
   }));
+
+  if (data.hasCollectStage) {
+    const updateRegionField = (
+      regionId: number,
+      field: 'queue_number' | 'manager_id' | 'specialist_id' | 'demand_quota',
+      value: number | null,
+    ) => {
+      const next = (data.regionData || []).map((r) =>
+        r.region_id === regionId
+          ? { ...r, [field]: value ?? (field === 'demand_quota' ? 0 : null) }
+          : r,
+      );
+      onChange({ regionData: next });
+    };
+
+    return (
+      <div>
+        <Typography.Title level={5}>Распределение регионов</Typography.Title>
+        <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+          Для стадии «Сбор и добавление лидов» назначьте ответственного менеджера и
+          специалиста по первичному контакту на каждый регион.
+        </Typography.Text>
+        <Card size="small" style={{ marginBottom: 16 }}>
+          {data.regionData.length === 0 ? (
+            <Typography.Text type="secondary">
+              Регионы отбора не выбраны. Вернитесь на предыдущий шаг.
+            </Typography.Text>
+          ) : (
+            <Table
+              size="small"
+              rowKey="region_id"
+              pagination={false}
+              dataSource={data.regionData}
+              columns={[
+                {
+                  title: 'Регион',
+                  dataIndex: 'region_id',
+                  key: 'region_id',
+                  render: (regionId: number) => regionNameById[regionId] || `Регион #${regionId}`,
+                },
+                {
+                  title: 'Очередь',
+                  key: 'queue_number',
+                  width: 170,
+                  render: (_: unknown, row: { region_id: number; queue_number: number | null }) => (
+                    <Select
+                      size="small"
+                      style={{ width: '100%' }}
+                      value={row.queue_number ?? 1}
+                      options={data.queues.map((q) => ({
+                        value: q.queue_number,
+                        label: q.name || `Очередь ${q.queue_number}`,
+                      }))}
+                      onChange={(v) => updateRegionField(row.region_id, 'queue_number', v)}
+                    />
+                  ),
+                },
+                {
+                  title: 'Квота, чел.',
+                  key: 'demand_quota',
+                  width: 140,
+                  render: (_: unknown, row: { region_id: number; demand_quota?: number }) => (
+                    <InputNumber
+                      min={0}
+                      size="small"
+                      style={{ width: '100%' }}
+                      value={row.demand_quota ?? 0}
+                      onChange={(v) => updateRegionField(row.region_id, 'demand_quota', v)}
+                    />
+                  ),
+                },
+                {
+                  title: 'Менеджер',
+                  key: 'manager_id',
+                  width: 260,
+                  render: (_: unknown, row: any) => (
+                    <Select
+                      allowClear
+                      size="small"
+                      style={{ width: '100%' }}
+                      value={row.manager_id ?? undefined}
+                      options={userOptions}
+                      onChange={(v) => updateRegionField(row.region_id, 'manager_id', v ?? null)}
+                    />
+                  ),
+                },
+                {
+                  title: 'Специалист по первичному контакту',
+                  key: 'specialist_id',
+                  width: 300,
+                  render: (_: unknown, row: any) => (
+                    <Select
+                      allowClear
+                      size="small"
+                      style={{ width: '100%' }}
+                      value={row.specialist_id ?? undefined}
+                      options={userOptions}
+                      onChange={(v) => updateRegionField(row.region_id, 'specialist_id', v ?? null)}
+                    />
+                  ),
+                },
+              ]}
+            />
+          )}
+        </Card>
+      </div>
+    );
+  }
 
   if (data.selectedExternalOrgs.length === 0) {
     return (
@@ -511,9 +759,9 @@ export default function StepManagers({ data, onChange }: Props) {
                 value={data.forecastDemandTotal}
                 onChange={(v) => onChange({ forecastDemandTotal: v })}
               />
-              {data.forecastDemandTotal != null && data.selectedExternalOrgs.length > 0 && (
+              {data.forecastDemandTotal != null && totalLeadsCount > 0 && (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  ≈ {Math.round(data.forecastDemandTotal / data.selectedExternalOrgs.length)} на организацию
+                  ≈ {Math.round(data.forecastDemandTotal / totalLeadsCount)} на лид
                 </Typography.Text>
               )}
             </Space>
@@ -522,10 +770,10 @@ export default function StepManagers({ data, onChange }: Props) {
           {data.forecastDemandMode === 'per_queue' && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
               {data.queues.map((q) => {
-                const count = (orgsByQueue[q.queue_number] || []).length;
+                const count = leadsCountByQueue[q.queue_number] || 0;
                 return (
                   <Space key={q.queue_number} align="center">
-                    <Typography.Text>{q.name} ({count} орг.):</Typography.Text>
+                    <Typography.Text>{q.name} ({count} лид.):</Typography.Text>
                     <InputNumber
                       min={0} style={{ width: 120 }}
                       placeholder="0"
@@ -553,10 +801,15 @@ export default function StepManagers({ data, onChange }: Props) {
 
           {data.forecastDemandMode === 'per_org' && (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Введите прогноз для каждой организации в столбце «Прогноз» таблицы ниже.
+              Введите прогноз по каждому региону лида в столбце «Прогноз» таблицы ниже.
               {(() => {
-                const total = Object.values(data.orgDistribution)
-                  .reduce((s, d) => s + (d.forecastDemand || 0), 0);
+                const total = data.selectedExternalOrgs.reduce((sum, org) => {
+                  const regionIds = getOrgLeadRegionIds(org);
+                  if (regionIds.length === 0) {
+                    return sum + (getLeadForecast(org, null) || 0);
+                  }
+                  return sum + regionIds.reduce((acc, regionId) => acc + (getLeadForecast(org, regionId) || 0), 0);
+                }, 0);
                 return total > 0 ? ` Итого: ${total}` : '';
               })()}
             </Typography.Text>

@@ -17,6 +17,8 @@ import {
   useDeleteChecklistAttachment,
   useCreateLeadInteraction, useAdvanceLeadStage, useRetreatLeadStage, useRejectLead, useLeadTimeline,
   useContactsByOrganization,
+  useOrganizationTags, useUsers,
+  useAdvanceLeadSubfunnelStage, useRetreatLeadSubfunnelStage,
 } from '../../api/hooks';
 import type { LeadTimelineItem } from '../../types';
 import type { LeadChecklistValue, LeadStageDeadline } from '../../types';
@@ -25,6 +27,8 @@ import ChecklistRichTextEditor from '../../components/ChecklistRichTextEditor';
 import ChecklistRichTextHtml from '../../components/ChecklistRichTextHtml';
 import LeadContactsTab from './LeadContactsTab';
 import DemandQuotaPreview, { leadToDemandBreakdown } from '../../components/DemandQuotaPreview';
+import EntityTagSelect from '../../components/EntityTagSelect';
+import TaskEditDrawer from '../../components/TaskEditDrawer';
 
 const channelOptions = [
   { value: 'email', label: 'Email' },
@@ -42,12 +46,30 @@ const CONFIRMATION_TYPE_LABELS: Record<string, string> = {
   contact: 'Контакт',
 };
 
+const PRIMARY_CONTACT_STATUS_META: Record<
+  string,
+  { label: string; color: 'default' | 'processing' | 'success' | 'warning' | 'error' }
+> = {
+  new: { label: 'Новый', color: 'default' },
+  email_prepared: { label: 'Письмо подготовлено', color: 'processing' },
+  email_sent: { label: 'Письмо отправлено', color: 'processing' },
+  response_received: { label: 'Ответ получен', color: 'success' },
+  result_recorded: { label: 'Результат зафиксирован', color: 'success' },
+  rejected: { label: 'Отказ', color: 'error' },
+};
+
 export default function LeadDetailPage() {
   const { message } = App.useApp();
   const { campaignId, leadId } = useParams<{ campaignId: string; leadId: string }>();
   const navigate = useNavigate();
   const { data: lead, isLoading } = useLead(leadId!);
   const updateLead = useUpdateLead(leadId!);
+  const { data: tagsCatalog } = useOrganizationTags({ page_size: 500, tag_type: 'leads' });
+  const { data: usersData } = useUsers();
+  const specialistOptions = (usersData?.results || []).map((u) => ({
+    value: u.id,
+    label: u.full_name || u.username,
+  }));
   const [demandModalOpen, setDemandModalOpen] = useState(false);
   const [demandForm] = Form.useForm();
   const [historyKind, setHistoryKind] = useState<string>('');
@@ -79,7 +101,10 @@ export default function LeadDetailPage() {
   const advanceStage = useAdvanceLeadStage(leadId!);
   const retreatStage = useRetreatLeadStage(leadId!);
   const rejectLead = useRejectLead(leadId!);
+  const advanceTaskStage = useAdvanceLeadSubfunnelStage();
+  const retreatTaskStage = useRetreatLeadSubfunnelStage();
 
+  const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
   const [interactionModalOpen, setInteractionModalOpen] = useState(false);
   const [interactionForm] = Form.useForm();
   const [contactMode, setContactMode] = useState<'select' | 'manual'>('select');
@@ -176,13 +201,13 @@ export default function LeadDetailPage() {
   const handleSaveDemand = async () => {
     try {
       const v = await demandForm.validateFields();
+      const listFact = v.demand_quota_list ?? 0;
       await updateLead.mutateAsync({
         forecast_demand: v.forecast_demand ?? null,
         demand_quota_declared: v.demand_quota_declared ?? 0,
-        demand_quota_list: v.demand_quota_list ?? 0,
-        demand_collected_declared: v.demand_collected_declared ?? 0,
-        demand_collected_list: v.demand_collected_list ?? 0,
-        demand_count: v.demand_count ?? 0,
+        demand_quota_list: listFact,
+        // Списочная в новой модели = факт.
+        demand_count: listFact,
       });
       message.success('Потребность сохранена');
       setDemandModalOpen(false);
@@ -394,6 +419,22 @@ export default function LeadDetailPage() {
         >
           {value.checklist_item_text}
         </Checkbox>
+        {value.communication_step_display && (
+          <Tag color="purple" style={{ marginLeft: 8 }}>
+            {value.communication_step_display}
+          </Tag>
+        )}
+        {!readOnly && (
+          <Select
+            allowClear
+            size="small"
+            placeholder="Ответственный специалист"
+            style={{ minWidth: 260, marginLeft: 12 }}
+            value={value.primary_contact_specialist ?? undefined}
+            options={specialistOptions}
+            onChange={(v) => handleUpdateField(value.id, 'primary_contact_specialist', v ?? null)}
+          />
+        )}
       </div>
       {(value.confirmation_types?.length ?? 0) > 0 && (
         <div style={{ marginLeft: 24, marginTop: 6 }}>
@@ -513,13 +554,48 @@ export default function LeadDetailPage() {
           </div>
           <div style={{ textAlign: 'right' }}>
             {lead.manager_name && (
-              <Typography.Text>Менеджер: <strong>{lead.manager_name}</strong></Typography.Text>
+              <Typography.Text style={{ display: 'block' }}>
+                Менеджер: <strong>{lead.manager_name}</strong>
+              </Typography.Text>
+            )}
+            {lead.primary_contact_specialist_name && (
+              <Typography.Text style={{ display: 'block' }}>
+                Специалист: <strong>{lead.primary_contact_specialist_name}</strong>
+              </Typography.Text>
             )}
           </div>
         </div>
 
         <Descriptions column={1} style={{ marginTop: 16 }} size="small">
           <Descriptions.Item label="Регион">{lead.organization_region || '—'}</Descriptions.Item>
+          <Descriptions.Item label="Статус первичного контакта">
+            {lead.primary_contact_status ? (
+              <Tag color={PRIMARY_CONTACT_STATUS_META[lead.primary_contact_status]?.color || 'default'}>
+                {PRIMARY_CONTACT_STATUS_META[lead.primary_contact_status]?.label || lead.primary_contact_status}
+              </Tag>
+            ) : (
+              '—'
+            )}
+          </Descriptions.Item>
+          {lead.primary_contact_result && (
+            <Descriptions.Item label="Результат первичного контакта">
+              {lead.primary_contact_result}
+            </Descriptions.Item>
+          )}
+          <Descriptions.Item label="Теги лида">
+            <EntityTagSelect
+              availableTags={tagsCatalog?.results ?? []}
+              value={lead.tags ?? []}
+              onChange={async (tagIds) => {
+                try {
+                  await updateLead.mutateAsync({ tags: tagIds });
+                  message.success('Теги обновлены');
+                } catch {
+                  message.error('Не удалось сохранить теги');
+                }
+              }}
+            />
+          </Descriptions.Item>
         </Descriptions>
         <div style={{ marginTop: 8 }}>
           <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
@@ -534,10 +610,7 @@ export default function LeadDetailPage() {
               demandForm.setFieldsValue({
                 forecast_demand: lead.forecast_demand,
                 demand_quota_declared: lead.demand_quota_declared ?? 0,
-                demand_quota_list: lead.demand_quota_list ?? 0,
-                demand_collected_declared: lead.demand_collected_declared ?? 0,
-                demand_collected_list: lead.demand_collected_list ?? 0,
-                demand_count: lead.demand_count,
+                demand_quota_list: lead.demand_quota_list ?? lead.demand_count ?? 0,
               });
               setDemandModalOpen(true);
             }}
@@ -547,8 +620,63 @@ export default function LeadDetailPage() {
         </div>
       </Card>
 
+      {(lead.subfunnels?.length ?? 0) > 0 && (
+        <Card title="Задачи" style={{ marginBottom: 16 }}>
+          <Space direction="vertical" style={{ width: '100%' }} size={10}>
+            {(lead.subfunnels || []).map((sf: any) => (
+              <Card key={sf.id} size="small">
+                <Space wrap>
+                  <Typography.Text strong>{sf.template_name}</Typography.Text>
+                  <Tag>{sf.role_name || 'Без роли'}</Tag>
+                  <Tag color={sf.is_available ? 'green' : 'default'}>
+                    {sf.is_available ? 'Доступна' : 'Вне диапазона'}
+                  </Tag>
+                  <Tag color={sf.status === 'done' ? 'green' : sf.status === 'in_progress' ? 'blue' : 'default'}>
+                    {sf.current_template_stage_name || 'Без этапа'}
+                  </Tag>
+                </Space>
+                {sf.assignee_name && (
+                  <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6 }}>
+                    Исполнитель: {sf.assignee_name}
+                  </Typography.Text>
+                )}
+                <Space style={{ marginTop: 8 }} wrap>
+                  <Button size="small" onClick={() => setEditingTaskId(sf.id)}>
+                    Редактировать
+                  </Button>
+                  <Button
+                    size="small"
+                    disabled={!sf.can_retreat_stage}
+                    loading={retreatTaskStage.isPending}
+                    onClick={() => retreatTaskStage.mutate({ id: sf.id })}
+                  >
+                    Назад
+                  </Button>
+                  <Button
+                    size="small"
+                    type="primary"
+                    disabled={!sf.can_advance_stage}
+                    loading={advanceTaskStage.isPending}
+                    onClick={() => advanceTaskStage.mutate({ id: sf.id })}
+                  >
+                    Вперёд
+                  </Button>
+                </Space>
+                {(sf.checklist_values?.length ?? 0) > 0 && (
+                  <Progress
+                    style={{ marginTop: 8 }}
+                    percent={Math.round((sf.checklist_values.filter((c: any) => c.is_completed).length / sf.checklist_values.length) * 100)}
+                    size="small"
+                  />
+                )}
+              </Card>
+            ))}
+          </Space>
+        </Card>
+      )}
+
       <Modal
-        title="План, квоты и собрано"
+        title="План и квоты"
         open={demandModalOpen}
         onOk={handleSaveDemand}
         onCancel={() => setDemandModalOpen(false)}
@@ -565,7 +693,7 @@ export default function LeadDetailPage() {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="demand_count" label="Факт. потребность (наслед.)">
+              <Form.Item name="demand_quota_list" label="Списочная (факт)">
                 <InputNumber min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
@@ -574,24 +702,6 @@ export default function LeadDetailPage() {
           <Row gutter={12} style={{ marginTop: 8 }}>
             <Col span={12}>
               <Form.Item name="demand_quota_declared" label="Заявленная">
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="demand_quota_list" label="Списочная">
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Typography.Text strong>Собрано</Typography.Text>
-          <Row gutter={12} style={{ marginTop: 8 }}>
-            <Col span={12}>
-              <Form.Item name="demand_collected_declared" label="По заявленной квоте">
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="demand_collected_list" label="По списочной квоте">
                 <InputNumber min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
@@ -882,6 +992,15 @@ export default function LeadDetailPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <TaskEditDrawer
+        open={editingTaskId != null}
+        taskId={editingTaskId}
+        campaignId={campaignId ? Number(campaignId) : undefined}
+        leadId={leadId ? Number(leadId) : undefined}
+        leadName={lead?.organization_name}
+        onClose={() => setEditingTaskId(null)}
+      />
     </div>
   );
 }

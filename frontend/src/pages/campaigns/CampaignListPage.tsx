@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, Table, Tag, Button, Space, Select, Typography, Input, Popconfirm, App, Segmented, Alert } from 'antd';
 import { PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, AppstoreOutlined, UnorderedListOutlined } from '@ant-design/icons';
-import { useCampaigns, useDeleteCampaign } from '../../api/hooks';
+import { useCampaigns, useDeleteCampaign, useOrganizationTags } from '../../api/hooks';
 import { getAxiosErrorMessage } from '../../api/errorMessage';
 import type { Campaign } from '../../types';
 import CampaignBoardView from './CampaignBoardView';
+import EntityTagSelect, { renderTagChips } from '../../components/EntityTagSelect';
 
 const statusColors: Record<string, string> = {
   draft: 'default',
@@ -23,14 +24,17 @@ export default function CampaignListPage() {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const deleteCampaign = useDeleteCampaign();
+  const { data: tagsCatalog } = useOrganizationTags({ page_size: 500, tag_type: 'campaigns' });
   const [viewMode, setViewMode] = useState<'table' | 'board'>('board');
   const [statusFilter, setStatusFilter] = useState<string>();
+  const [tagFilter, setTagFilter] = useState<number[]>([]);
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [ordering, setOrdering] = useState<string>();
   const { data, isLoading, isError, error, refetch } = useCampaigns({
     status: statusFilter,
     search: search || undefined,
+    tags: tagFilter.length ? tagFilter.join(',') : undefined,
     page,
     ordering,
   });
@@ -56,10 +60,21 @@ export default function CampaignListPage() {
     },
     {
       title: 'ФО',
-      dataIndex: 'federal_operator_name',
       key: 'operator',
       width: 200,
-      render: (v: string | null) => v || '—',
+      render: (_: unknown, record: Campaign) => {
+        const label =
+          record.federal_operator_short_name?.trim() || record.federal_operator_name;
+        if (!label) return '—';
+        return (
+          <span
+            title={record.federal_operator_name || undefined}
+            style={{ whiteSpace: 'normal', wordBreak: 'break-word' }}
+          >
+            {label}
+          </span>
+        );
+      },
     },
     {
       title: 'Программ',
@@ -100,6 +115,13 @@ export default function CampaignListPage() {
         v && v.length > 0
           ? v.map((n, i) => <Tag key={i} color="blue" style={{ marginBottom: 2 }}>{n}</Tag>)
           : '—',
+    },
+    {
+      title: 'Теги',
+      key: 'tags',
+      width: 220,
+      render: (_: unknown, record: Campaign) =>
+        renderTagChips(record.tag_names, tagsCatalog?.results, record.tags) || '—',
     },
     {
       title: 'Даты',
@@ -208,7 +230,7 @@ export default function CampaignListPage() {
       </div>
 
       {viewMode === 'board' ? (
-        <CampaignBoardView />
+        <CampaignBoardView tagsFilter={tagFilter} onTagsFilterChange={setTagFilter} />
       ) : (
       <Card>
         {isError && (
@@ -246,6 +268,13 @@ export default function CampaignListPage() {
               { value: 'paused', label: 'Приостановлена' },
               { value: 'completed', label: 'Завершена' },
             ]}
+          />
+          <EntityTagSelect
+            availableTags={tagsCatalog?.results ?? []}
+            value={tagFilter}
+            onChange={(v) => { setTagFilter(v); setPage(1); }}
+            placeholder="Теги"
+            style={{ minWidth: 220 }}
           />
         </Space>
 

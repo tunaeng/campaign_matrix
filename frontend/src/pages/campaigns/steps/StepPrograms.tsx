@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { Table, Tag, Select, Space, Typography, Input, Switch, Popover } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined, FileOutlined, EnvironmentOutlined } from '@ant-design/icons';
 import { usePrograms, useFederalOperators, useProfessions, useDemandMatrix } from '../../../api/hooks';
@@ -21,18 +21,10 @@ export default function StepPrograms({ data, onChange }: Props) {
   const { data: professionsData } = useProfessions();
   const [search, setSearch] = useState('');
   const [contractFilter, setContractFilter] = useState<string>();
-  const [operatorFilter, setOperatorFilter] = useState<number | undefined>(
-    data.federal_operator ?? undefined
-  );
+  const [operatorFilter, setOperatorFilter] = useState<number | undefined>();
   const [professionFilter, setProfessionFilter] = useState<number | undefined>();
   const [demandedOnly, setDemandedOnly] = useState(false);
   const [demandRegionFilter, setDemandRegionFilter] = useState<number[]>([]);
-
-  useEffect(() => {
-    if (data.federal_operator && !operatorFilter) {
-      setOperatorFilter(data.federal_operator);
-    }
-  }, [data.federal_operator]);
 
   const { data: programs, isLoading } = usePrograms({
     search: search || undefined,

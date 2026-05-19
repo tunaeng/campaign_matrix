@@ -3,9 +3,19 @@ import client from './client';
 import type {
   PaginatedResponse, Campaign, CampaignDetail,
   Region, FederalDistrict, Profession, Program,
-  FederalOperator, Organization, Quota, DemandMatrix, UserShort,
-  Funnel, FunnelDetail, FunnelStage, StageChecklistItem, ChecklistItemOption,
+  FederalOperator, Organization, OrganizationTag, Project, ActingOrganization, Quota, DemandMatrix, UserShort,
+  Funnel, FunnelDetail, FunnelStage, StageChecklistItem, ChecklistItemOption, Contact, EntityFieldChange, WorkloadDashboardResponse,
+  RoleDefinition, UserRoleAssignment, SubfunnelTemplate, SubfunnelTemplateBinding, CampaignSubfunnel,
+  LeadSubfunnel, LeadSubfunnelBulkUpdateResult, CampaignCollectStageImportResult,
+  OrganizationListCaptureResult, RegionTaskCaptureSummary,
+  SubfunnelWorkspaceResponse, TaskTemplateStage,
 } from '../types';
+
+/** Второй сегмент ключа всегда string: из URL (useParams) и из API (number) иначе не сходятся при invalidate. */
+function campaignDetailQueryKey(id: number | string | null | undefined) {
+  if (id === undefined || id === null || id === '') return ['campaign', ''] as const;
+  return ['campaign', String(id)] as const;
+}
 
 // Auth
 export function useMe() {
@@ -32,6 +42,21 @@ export function useUsers() {
   return useQuery<PaginatedResponse<UserShort>>({
     queryKey: ['users'],
     queryFn: () => client.get('/auth/users/').then(r => r.data),
+  });
+}
+
+export function useRoles(params?: Record<string, any>) {
+  return useQuery<PaginatedResponse<RoleDefinition>>({
+    queryKey: ['roles', params],
+    queryFn: () => client.get('/auth/roles/', { params }).then(r => r.data),
+    staleTime: 300_000,
+  });
+}
+
+export function useRoleAssignments(params?: Record<string, any>) {
+  return useQuery<PaginatedResponse<UserRoleAssignment>>({
+    queryKey: ['role-assignments', params],
+    queryFn: () => client.get('/auth/role-assignments/', { params }).then(r => r.data),
   });
 }
 
@@ -67,18 +92,179 @@ export function usePrograms(params?: Record<string, any>) {
   });
 }
 
-export function useFederalOperators() {
+export function useFederalOperators(params?: Record<string, any>) {
   return useQuery<PaginatedResponse<FederalOperator>>({
-    queryKey: ['federal-operators'],
-    queryFn: () => client.get('/federal-operators/').then(r => r.data),
+    queryKey: ['federal-operators', params],
+    queryFn: () => client.get('/federal-operators/', { params }).then(r => r.data),
     staleTime: 600_000,
   });
 }
 
 export function useOrganizations(params?: Record<string, any>) {
+  const merged = { page_size: 500, ...(params ?? {}) };
   return useQuery<PaginatedResponse<Organization>>({
-    queryKey: ['organizations', params],
-    queryFn: () => client.get('/organizations/', { params: { ...params, page_size: 200 } }).then(r => r.data),
+    queryKey: ['organizations', merged],
+    queryFn: () => client.get('/organizations/', { params: merged }).then((r) => r.data),
+  });
+}
+
+export function useOrganizationTags(params?: Record<string, any>) {
+  return useQuery<PaginatedResponse<OrganizationTag>>({
+    queryKey: ['organization-tags', params],
+    queryFn: () => client.get('/organization-tags/', { params }).then(r => r.data),
+    staleTime: 300_000,
+  });
+}
+
+export function useCreateOrganizationTag() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<OrganizationTag>) =>
+      client.post('/organization-tags/', data).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['organization-tags'] }),
+  });
+}
+
+export function usePatchOrganizationTag() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: number } & Partial<OrganizationTag>) =>
+      client.patch(`/organization-tags/${id}/`, data).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['organization-tags'] }),
+  });
+}
+
+export function useDeleteOrganizationTag() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => client.delete(`/organization-tags/${id}/`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['organization-tags'] }),
+  });
+}
+
+export function useCreateOrganization() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<Organization>) => client.post('/organizations/', data).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['organizations'] }),
+  });
+}
+
+export function useUpdateOrganization() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: number } & Partial<Organization>) =>
+      client.patch(`/organizations/${id}/`, data).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['organizations'] }),
+  });
+}
+
+export function useProjects(params?: Record<string, any>) {
+  return useQuery<PaginatedResponse<Project>>({
+    queryKey: ['projects', params],
+    queryFn: () => client.get('/projects/', { params }).then(r => r.data),
+    staleTime: 300_000,
+  });
+}
+
+export function useCreateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<Project>) =>
+      client.post('/projects/', data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] });
+      qc.invalidateQueries({ queryKey: ['communication-history'] });
+    },
+  });
+}
+
+export function useUpdateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: number } & Partial<Project>) =>
+      client.patch(`/projects/${id}/`, data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] });
+      qc.invalidateQueries({ queryKey: ['communication-history'] });
+    },
+  });
+}
+
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => client.delete(`/projects/${id}/`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] });
+      qc.invalidateQueries({ queryKey: ['communication-history'] });
+    },
+  });
+}
+
+export function useProjectMemberships(params?: Record<string, any>) {
+  return useQuery<PaginatedResponse<import('../types').ProjectMembership>>({
+    queryKey: ['project-memberships', params],
+    queryFn: () => client.get('/project-memberships/', { params: { page_size: 1000, ...(params ?? {}) } }).then(r => r.data),
+  });
+}
+
+export function useCreateProjectMembership() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<import('../types').ProjectMembership>) =>
+      client.post('/project-memberships/', data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['project-memberships'] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
+      qc.invalidateQueries({ queryKey: ['organizations'] });
+    },
+  });
+}
+
+export function useUpdateProjectMembership() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: number } & Partial<import('../types').ProjectMembership>) =>
+      client.patch(`/project-memberships/${id}/`, data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['project-memberships'] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
+      qc.invalidateQueries({ queryKey: ['organizations'] });
+    },
+  });
+}
+
+export function useDeleteProjectMembership() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => client.delete(`/project-memberships/${id}/`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['project-memberships'] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
+      qc.invalidateQueries({ queryKey: ['organizations'] });
+    },
+  });
+}
+
+export function useActingOrganizations() {
+  return useQuery<PaginatedResponse<ActingOrganization>>({
+    queryKey: ['acting-organizations'],
+    queryFn: () => client.get('/acting-organizations/').then(r => r.data),
+  });
+}
+
+export function useMyActingOrganizations() {
+  return useQuery<ActingOrganization[]>({
+    queryKey: ['me-acting-organizations'],
+    queryFn: () => client.get('/me/acting-organizations/').then(r => r.data),
+  });
+}
+
+export function useCommunicationHistory(params?: Record<string, any>) {
+  return useQuery<any[]>({
+    queryKey: ['communication-history', params],
+    queryFn: () => client.get('/communication-history/', { params }).then(r => r.data),
   });
 }
 
@@ -159,7 +345,7 @@ export function useFunnel(id: number | string) {
 export function useCreateFunnel() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { name: string; description?: string }) =>
+    mutationFn: (data: { name: string; description?: string; tags?: number[] }) =>
       client.post('/funnels/', data).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['funnels'] }),
   });
@@ -187,7 +373,16 @@ export function useDeleteFunnel() {
 export function useCreateFunnelStage(funnelId: number | string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { name: string; order: number; deadline_days: number }) =>
+    mutationFn: (data: {
+      name: string;
+      order: number;
+      deadline_days: number;
+      responsible_role?: 'manager' | 'primary_contact_specialist';
+      is_collect_stage?: boolean;
+      selection_mode?: '' | 'regions';
+      search_task?: string;
+      primary_contact_specialist?: number | null;
+    }) =>
       client.post(`/funnels/${funnelId}/stages/`, { ...data, funnel: funnelId }).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['funnel', funnelId] }),
   });
@@ -213,7 +408,14 @@ export function useDeleteFunnelStage(funnelId: number | string) {
 export function useCreateChecklistItem(funnelId: number | string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { stage: number; text: string; order: number; confirmation_types: string[] }) =>
+    mutationFn: (data: {
+      stage: number;
+      text: string;
+      order: number;
+      confirmation_types: string[];
+      primary_contact_specialist?: number | null;
+      communication_step?: '' | 'email_prepared' | 'email_sent' | 'response_received' | 'result_recorded';
+    }) =>
       client.post('/checklist-items/', data).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['funnel', funnelId] }),
   });
@@ -254,6 +456,120 @@ export function useDeleteChecklistOption(funnelId: number | string) {
   });
 }
 
+export function useSubfunnelTemplates(params?: Record<string, any>) {
+  return useQuery<PaginatedResponse<SubfunnelTemplate>>({
+    queryKey: ['subfunnel-templates', params],
+    queryFn: () => client.get('/subfunnel-templates/', { params }).then(r => r.data),
+  });
+}
+
+export function useCreateSubfunnelTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<SubfunnelTemplate>) =>
+      client.post('/subfunnel-templates/', data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subfunnel-templates'] });
+    },
+  });
+}
+
+export function useTaskTemplateStages(templateId?: number | string) {
+  return useQuery<TaskTemplateStage[]>({
+    queryKey: ['task-template-stages', templateId],
+    queryFn: () => client.get(`/subfunnel-templates/${templateId}/stages/`).then(r => r.data),
+    enabled: !!templateId,
+  });
+}
+
+export function useCreateTaskTemplateStage(templateId: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<TaskTemplateStage>) =>
+      client.post(`/subfunnel-templates/${templateId}/stages/`, data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['task-template-stages', templateId] });
+      qc.invalidateQueries({ queryKey: ['subfunnel-templates'] });
+    },
+  });
+}
+
+export function usePatchTaskTemplateStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: number } & Partial<TaskTemplateStage>) =>
+      client.patch(`/task-template-stages/${id}/`, data).then(r => r.data),
+    onSuccess: (data: TaskTemplateStage) => {
+      qc.invalidateQueries({ queryKey: ['task-template-stages', data.template] });
+      qc.invalidateQueries({ queryKey: ['subfunnel-templates'] });
+    },
+  });
+}
+
+export function useDeleteTaskTemplateStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: number; templateId: number }) =>
+      client.delete(`/task-template-stages/${id}/`).then(r => r.data),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['task-template-stages', vars.templateId] });
+      qc.invalidateQueries({ queryKey: ['subfunnel-templates'] });
+    },
+  });
+}
+
+export function useSubfunnelBindings(funnelId?: number | string) {
+  return useQuery<SubfunnelTemplateBinding[]>({
+    queryKey: ['subfunnel-bindings', funnelId],
+    queryFn: () => client.get(`/funnels/${funnelId}/subfunnel-bindings/`).then(r => r.data),
+    enabled: !!funnelId,
+  });
+}
+
+export function useCreateSubfunnelTemplateItem(templateId: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: any) =>
+      client.post(`/subfunnel-templates/${templateId}/items/`, data).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subfunnel-templates'] });
+    },
+  });
+}
+
+export function usePatchSubfunnelTemplateItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: number } & Record<string, unknown>) =>
+      client.patch(`/subfunnel-template-items/${id}/`, data).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subfunnel-templates'] });
+    },
+  });
+}
+
+export function useDeleteSubfunnelTemplateItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => client.delete(`/subfunnel-template-items/${id}/`).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subfunnel-templates'] });
+    },
+  });
+}
+
+export function useCreateSubfunnelBinding(funnelId: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<SubfunnelTemplateBinding>) =>
+      client.post(`/funnels/${funnelId}/subfunnel-bindings/`, data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subfunnel-bindings', funnelId] });
+      qc.invalidateQueries({ queryKey: ['funnel', funnelId] });
+    },
+  });
+}
+
 // External organizations (Bitrix proxy)
 export function useExternalOrganizations(params?: Record<string, any>) {
   return useQuery<import('../types').ExternalOrganization[]>({
@@ -268,6 +584,18 @@ export function useExternalOrganizations(params?: Record<string, any>) {
           return [];
         }),
     enabled: !!params && Object.values(params).some(v => !!v),
+  });
+}
+
+/** Организации с is_our_side=true из Bitrix (для выбора ИНН; без фильтров в params) */
+export function useExternalOurOrganizations(pageSize = 500) {
+  return useQuery<import('../types').ExternalOrganization[]>({
+    queryKey: ['external-organizations-our-side', pageSize],
+    queryFn: () =>
+      client
+        .get('/external-organizations/our-side/', { params: { page_size: pageSize } })
+        .then(r => r.data ?? []),
+    staleTime: 300_000,
   });
 }
 
@@ -336,6 +664,50 @@ export function useUpdateLead(id: number | string) {
       qc.invalidateQueries({ queryKey: ['lead', id] });
       qc.invalidateQueries({ queryKey: ['leads'] });
       qc.invalidateQueries({ queryKey: ['campaign'] });
+    },
+  });
+}
+
+/** PATCH лида по id (доска канбана и т.п.) */
+export function usePatchLead() {
+  const qc = useQueryClient();
+  return useMutation<
+    unknown,
+    Error,
+    { id: number; data: Record<string, unknown>; campaignId?: number },
+    { prev?: CampaignDetail }
+  >({
+    mutationFn: (vars: { id: number; data: Record<string, unknown>; campaignId?: number }) =>
+      client.patch(`/leads/${vars.id}/`, vars.data).then((r) => r.data),
+    onMutate: async (vars) => {
+      if (vars.campaignId == null || !('current_stage' in vars.data)) return {};
+      const key = campaignDetailQueryKey(vars.campaignId);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<CampaignDetail>(key);
+      if (!prev?.leads) return {};
+      const raw = vars.data.current_stage;
+      const newStage = raw === null || raw === undefined ? null : Number(raw);
+      qc.setQueryData<CampaignDetail>(key, {
+        ...prev,
+        leads: prev.leads.map((l) =>
+          l.id === vars.id ? { ...l, current_stage: newStage } : l,
+        ),
+      });
+      return { prev };
+    },
+    onError: (_e, vars, ctx) => {
+      if (ctx?.prev && vars.campaignId != null) {
+        qc.setQueryData(campaignDetailQueryKey(vars.campaignId), ctx.prev);
+      }
+    },
+    onSuccess: (_d, { id, campaignId }) => {
+      qc.invalidateQueries({ queryKey: ['lead', id] });
+      qc.invalidateQueries({ queryKey: ['leads'] });
+      if (campaignId != null) {
+        qc.invalidateQueries({ queryKey: campaignDetailQueryKey(campaignId) });
+      } else {
+        qc.invalidateQueries({ queryKey: ['campaign'] });
+      }
     },
   });
 }
@@ -508,10 +880,11 @@ export function useCampaigns(params?: Record<string, any>) {
 }
 
 export function useCampaign(id: number | string) {
+  const key = campaignDetailQueryKey(id);
   return useQuery<CampaignDetail>({
-    queryKey: ['campaign', id],
-    queryFn: () => client.get(`/campaigns/${id}/`).then(r => r.data),
-    enabled: !!id,
+    queryKey: key,
+    queryFn: () => client.get(`/campaigns/${key[1]}/`).then(r => r.data),
+    enabled: !!key[1],
   });
 }
 
@@ -529,7 +902,39 @@ export function useUpdateCampaign(id: number | string) {
     mutationFn: (data: any) => client.patch(`/campaigns/${id}/`, data).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['campaigns'] });
-      qc.invalidateQueries({ queryKey: ['campaign', id] });
+      qc.invalidateQueries({ queryKey: campaignDetailQueryKey(id) });
+    },
+  });
+}
+
+/** PATCH кампании по id (доска, dnd и т.п.) */
+export function usePatchCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: Record<string, unknown> }) =>
+      client.patch(`/campaigns/${id}/`, data).then((r) => r.data),
+    onMutate: async ({ id, data }) => {
+      const status = data.status as Campaign['status'] | undefined;
+      if (status === undefined) return {};
+      await qc.cancelQueries({ queryKey: ['campaigns'] });
+      const previous = qc.getQueriesData<PaginatedResponse<Campaign>>({ queryKey: ['campaigns'] });
+      qc.setQueriesData<PaginatedResponse<Campaign>>({ queryKey: ['campaigns'] }, (old) => {
+        if (!old?.results) return old;
+        return {
+          ...old,
+          results: old.results.map((c) => (c.id === id ? { ...c, status } : c)),
+        };
+      });
+      return { previous };
+    },
+    onError: (_e, _vars, ctx) => {
+      ctx?.previous?.forEach(([queryKey, data]) => {
+        qc.setQueryData(queryKey, data);
+      });
+    },
+    onSuccess: (_d, { id }) => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+      qc.invalidateQueries({ queryKey: campaignDetailQueryKey(id) });
     },
   });
 }
@@ -538,7 +943,10 @@ export function useDeleteCampaign() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => client.delete(`/campaigns/${id}/`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+      qc.removeQueries({ queryKey: campaignDetailQueryKey(id) });
+    },
   });
 }
 
@@ -547,7 +955,7 @@ export function useAddCampaignPrograms(campaignId: number | string) {
   return useMutation({
     mutationFn: (data: { program_ids: number[] }) =>
       client.post(`/campaigns/${campaignId}/programs/`, data).then(r => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaign', campaignId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: campaignDetailQueryKey(campaignId) }),
   });
 }
 
@@ -556,7 +964,7 @@ export function useAddCampaignRegions(campaignId: number | string) {
   return useMutation({
     mutationFn: (data: { regions: any[] }) =>
       client.post(`/campaigns/${campaignId}/regions/`, data).then(r => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaign', campaignId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: campaignDetailQueryKey(campaignId) }),
   });
 }
 
@@ -565,7 +973,7 @@ export function useAddCampaignOrganizations(campaignId: number | string) {
   return useMutation({
     mutationFn: (data: { organization_ids: number[] }) =>
       client.post(`/campaigns/${campaignId}/organizations/`, data).then(r => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaign', campaignId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: campaignDetailQueryKey(campaignId) }),
   });
 }
 
@@ -574,16 +982,206 @@ export function useAssignManagers(campaignId: number | string) {
   return useMutation({
     mutationFn: (data: { assignments: any[] }) =>
       client.post(`/campaigns/${campaignId}/assign-managers/`, data).then(r => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaign', campaignId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: campaignDetailQueryKey(campaignId) }),
+  });
+}
+
+export function useWorkloadDashboard(params?: {
+  role?: 'all' | 'manager' | 'specialist';
+  campaign?: number;
+  funnel?: number;
+  user?: number;
+  date_from?: string;
+  date_to?: string;
+}) {
+  return useQuery<WorkloadDashboardResponse>({
+    queryKey: ['workload-dashboard', params],
+    queryFn: () => client.get('/campaigns/workload-dashboard/', { params }).then(r => r.data),
+    staleTime: 60_000,
+  });
+}
+
+export function useCampaignSubfunnels(campaignId?: number | string) {
+  return useQuery<CampaignSubfunnel[]>({
+    queryKey: ['campaign-subfunnels', campaignId],
+    queryFn: () => client.get(`/campaigns/${campaignId}/subfunnels/`).then(r => r.data),
+    enabled: !!campaignId,
+  });
+}
+
+export function useSubfunnelWorkspace(params?: {
+  campaign?: number;
+  template?: number;
+  subfunnel?: number;
+  role?: number;
+  assignee?: number;
+  status?: number | string;
+  overdue?: boolean;
+  view_mode?: 'kanban' | 'table';
+}) {
+  return useQuery<SubfunnelWorkspaceResponse>({
+    queryKey: ['subfunnel-workspace', params],
+    queryFn: () => client.get('/campaigns/subfunnel-workspace/', { params }).then(r => r.data),
+    staleTime: 30_000,
+  });
+}
+
+export function useLeadSubfunnels(leadId?: number | string) {
+  return useQuery<LeadSubfunnel[]>({
+    queryKey: ['lead-subfunnels', leadId],
+    queryFn: () => client.get(`/leads/${leadId}/subfunnels/`).then(r => r.data),
+    enabled: !!leadId,
+  });
+}
+
+export function useLeadSubfunnel(id?: number | null) {
+  return useQuery<LeadSubfunnel>({
+    queryKey: ['lead-subfunnel', id],
+    queryFn: () => client.get(`/lead-subfunnels/${id}/`).then(r => r.data),
+    enabled: !!id,
+  });
+}
+
+function invalidateTaskRelatedQueries(qc: ReturnType<typeof useQueryClient>, leadId?: number | null) {
+  qc.invalidateQueries({ queryKey: ['lead-subfunnel'] });
+  qc.invalidateQueries({ queryKey: ['lead-subfunnels'] });
+  qc.invalidateQueries({ queryKey: ['subfunnel-workspace'] });
+  qc.invalidateQueries({ queryKey: ['leads'] });
+  qc.invalidateQueries({ queryKey: ['campaign'] });
+  if (leadId) {
+    qc.invalidateQueries({ queryKey: ['lead', leadId] });
+  }
+}
+
+export function usePatchLeadSubfunnel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: number } & Partial<LeadSubfunnel>) =>
+      client.patch(`/lead-subfunnels/${id}/`, data).then(r => r.data),
+    onSuccess: (data: LeadSubfunnel) => {
+      invalidateTaskRelatedQueries(qc, data?.lead);
+    },
+  });
+}
+
+export function usePatchLeadSubfunnelChecklist() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      rows,
+    }: {
+      id: number;
+      rows: Array<{ id: number; is_completed?: boolean; text_value?: string; assignee?: number | null }>;
+    }) => client.patch(`/lead-subfunnels/${id}/checklist/`, rows).then(r => r.data),
+    onSuccess: (_data, vars) => {
+      invalidateTaskRelatedQueries(qc);
+      qc.invalidateQueries({ queryKey: ['lead-subfunnel', vars.id] });
+    },
+  });
+}
+
+export function useAdvanceLeadSubfunnelStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: number }) =>
+      client.post(`/lead-subfunnels/${id}/advance-task-stage/`).then(r => r.data),
+    onSuccess: (data: LeadSubfunnel) => {
+      invalidateTaskRelatedQueries(qc, data?.lead);
+    },
+  });
+}
+
+export function useRetreatLeadSubfunnelStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: number }) =>
+      client.post(`/lead-subfunnels/${id}/retreat-task-stage/`).then(r => r.data),
+    onSuccess: (data: LeadSubfunnel) => {
+      invalidateTaskRelatedQueries(qc, data?.lead);
+    },
+  });
+}
+
+export function useSetLeadSubfunnelStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, stage_id }: { id: number; stage_id: number }) =>
+      client.post(`/lead-subfunnels/${id}/set-task-stage/`, { stage_id }).then(r => r.data),
+    onSuccess: (data: LeadSubfunnel) => {
+      invalidateTaskRelatedQueries(qc, data?.lead);
+    },
+  });
+}
+
+export function useCampaignCollectStageImport(campaignId?: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (formData: FormData) =>
+      client
+        .post<CampaignCollectStageImportResult>(`/campaigns/${campaignId}/collect-stage-import/`, formData)
+        .then((r) => r.data),
+    onSuccess: () => {
+      if (campaignId) {
+        qc.invalidateQueries({ queryKey: ['campaign', String(campaignId)] });
+      }
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+  });
+}
+
+export function useOrganizationListCapture(campaignId?: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      mode?: 'minimal' | 'full';
+      campaign_region_id?: number;
+      items: Array<Record<string, any>>;
+    }) =>
+      client
+        .post<OrganizationListCaptureResult>(`/campaigns/${campaignId}/organization-list-capture/`, data)
+        .then((r) => r.data),
+    onSuccess: () => {
+      invalidateTaskRelatedQueries(qc);
+      if (campaignId) {
+        qc.invalidateQueries({ queryKey: ['campaign', String(campaignId)] });
+      }
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+  });
+}
+
+export function useRegionTaskCapture(taskId?: number | null) {
+  return useQuery<RegionTaskCaptureSummary>({
+    queryKey: ['lead-subfunnel', taskId, 'region-capture'],
+    queryFn: () => client.get(`/lead-subfunnels/${taskId}/region-capture/`).then((r) => r.data),
+    enabled: !!taskId,
+  });
+}
+
+export function useBulkUpdateLeadSubfunnels() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      ids: number[];
+      assignee?: number | null;
+      due_at?: string | null;
+      clear_due_at?: boolean;
+      stage_id?: number | null;
+    }) => client.post<LeadSubfunnelBulkUpdateResult>('/lead-subfunnels/bulk-update/', data).then(r => r.data),
+    onSuccess: () => {
+      invalidateTaskRelatedQueries(qc);
+    },
   });
 }
 
 // --- Contacts ---
 
 export function useContacts(params?: Record<string, any>) {
-  return useQuery<import('../types').Contact[]>({
-    queryKey: ['contacts', params],
-    queryFn: () => client.get('/contacts/', { params }).then(r => r.data.results ?? r.data),
+  const merged = { page_size: 200, ...(params ?? {}) };
+  return useQuery<PaginatedResponse<Contact>>({
+    queryKey: ['contacts', merged],
+    queryFn: () => client.get('/contacts/', { params: merged }).then(r => r.data),
   });
 }
 
@@ -615,13 +1213,131 @@ export function useUpdateContact() {
   });
 }
 
+export function useImportContactsXlsx() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (formData: FormData) =>
+      client.post('/contacts/import-xlsx/', formData).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['contacts'] });
+      qc.invalidateQueries({ queryKey: ['organizations'] });
+    },
+  });
+}
+
+export function useImportOrganizationsXlsx() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (formData: FormData) =>
+      client.post('/organizations/import-xlsx/', formData).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['organizations'] });
+    },
+  });
+}
+
+export function useContactChangeLog(contactId: number | undefined, params?: Record<string, any>) {
+  const merged = { page_size: 50, ...(params ?? {}) };
+  return useQuery<PaginatedResponse<EntityFieldChange>>({
+    queryKey: ['contacts', contactId, 'change-log', merged],
+    queryFn: () => client.get(`/contacts/${contactId}/change-log/`, { params: merged }).then(r => r.data),
+    enabled: !!contactId,
+  });
+}
+
+export function useOrganizationChangeLog(organizationId: number | undefined, params?: Record<string, any>) {
+  const merged = { page_size: 50, ...(params ?? {}) };
+  return useQuery<PaginatedResponse<EntityFieldChange>>({
+    queryKey: ['organizations', organizationId, 'change-log', merged],
+    queryFn: () => client.get(`/organizations/${organizationId}/change-log/`, { params: merged }).then(r => r.data),
+    enabled: !!organizationId,
+  });
+}
+
 export function useExternalContacts(orgName: string | undefined) {
-  return useQuery<any[]>({
+  return useQuery<import('../types').ExternalContact[]>({
     queryKey: ['external-contacts', orgName],
     queryFn: () =>
       client.get('/external-contacts/', { params: { organization__contains: orgName } })
         .then(r => r.data),
     enabled: !!orgName,
+  });
+}
+
+export function useExternalContactHistory(contactId: number | undefined, page = 1, pageSize = 20) {
+  return useQuery<PaginatedResponse<import('../types').ExternalContactHistoryRecord>>({
+    queryKey: ['external-contact-history', contactId, page, pageSize],
+    queryFn: () =>
+      client
+        .get('/external-contacts/history/', {
+          params: { id: contactId, page, page_size: pageSize },
+        })
+        .then(r => r.data),
+    enabled: !!contactId,
+  });
+}
+
+export function useAddExternalContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Record<string, any>) =>
+      client.post('/external-contacts/add/', data).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['contacts'] }),
+  });
+}
+
+export function useUpdateExternalContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { id: number } & Record<string, any>) =>
+      client.patch('/external-contacts/update/', data).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['contacts'] }),
+  });
+}
+
+export function useExternalCommunications(params?: Record<string, any>) {
+  return useQuery<PaginatedResponse<import('../types').ExternalCommunication> | import('../types').ExternalCommunication[]>({
+    queryKey: ['external-communications', params],
+    queryFn: () => client.get('/external-communications/', { params }).then(r => r.data),
+  });
+}
+
+export function useAddExternalCommunication() {
+  return useMutation({
+    mutationFn: (data: import('../types').ExternalCommunicationPayload) =>
+      client.post('/external-communications/add/', data).then(r => r.data),
+  });
+}
+
+export function useUpdateExternalCommunication() {
+  return useMutation({
+    mutationFn: (data: { id: number } & Partial<import('../types').ExternalCommunicationPayload>) =>
+      client.patch('/external-communications/update/', data).then(r => r.data),
+  });
+}
+
+export function useSyncUserAsOurSideContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      user_id?: number;
+      /** Один ИНН (совместимость) */
+      organization_inn?: string;
+      /** Несколько ИНН — отдельный контакт Bitrix на каждую организацию */
+      organization_inns?: string[] | string;
+      manager?: boolean;
+      position?: string;
+      comment?: string;
+      /** Дублировать в локальный Contact (по умолчанию true) */
+      sync_local?: boolean;
+    }) =>
+      client
+        .post<import('../types').SyncUserAsOurSideContactResponse>(
+          '/external-contacts/sync-user/',
+          data,
+        )
+        .then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['contacts'] }),
   });
 }
 

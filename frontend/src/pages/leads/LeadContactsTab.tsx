@@ -7,8 +7,10 @@ import {
   StarFilled, StarOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { useUpdateContact, useCreateContact, useUpdateLead } from '../../api/hooks';
+import { useUpdateContact, useCreateContact, useUpdateLead, useOrganizationTags } from '../../api/hooks';
+import EntityTagSelect, { renderTagChips } from '../../components/EntityTagSelect';
 import type { Contact } from '../../types';
+import { formatPhoneWithExtension } from '../../utils/formatPhoneWithExtension';
 
 type Props = {
   leadId: number;
@@ -36,6 +38,7 @@ export default function LeadContactsTab({
   const [createForm] = Form.useForm();
   const updateContact = useUpdateContact();
   const createContact = useCreateContact();
+  const { data: tagsCatalog } = useOrganizationTags({ page_size: 500, tag_type: 'contacts' });
   const contactType = Form.useWatch('type', form);
   const createType = Form.useWatch('type', createForm);
 
@@ -49,11 +52,13 @@ export default function LeadContactsTab({
       middle_name: c.middle_name,
       position: c.position,
       phone: c.phone,
+      phone_extension: c.phone_extension,
       email: c.email,
       messenger: c.messenger,
       is_manager: c.is_manager,
       department_name: c.department_name,
       current: c.current,
+      tags: c.tags ?? [],
     });
     setEditOpen(true);
   };
@@ -99,11 +104,13 @@ export default function LeadContactsTab({
         middle_name: values.middle_name || '',
         position: values.position || '',
         phone: values.phone || '',
+        phone_extension: values.phone_extension || '',
         email: values.email || '',
         messenger: values.messenger || '',
         is_manager: values.is_manager || false,
         department_name: values.department_name || '',
         current: true,
+        tags: values.tags || [],
       });
       message.success('Контакт создан');
       setCreateOpen(false);
@@ -167,8 +174,8 @@ export default function LeadContactsTab({
       title: 'Телефон',
       dataIndex: 'phone',
       key: 'phone',
-      width: 140,
-      render: (v) => v || '—',
+      width: 180,
+      render: (_, r) => formatPhoneWithExtension(r.phone, r.phone_extension) || '—',
     },
     {
       title: 'Email',
@@ -176,6 +183,13 @@ export default function LeadContactsTab({
       key: 'email',
       ellipsis: true,
       render: (v) => v || '—',
+    },
+    {
+      title: 'Теги',
+      key: 'tags',
+      width: 160,
+      render: (_, r) =>
+        renderTagChips(r.tag_names, tagsCatalog?.results, r.tags) || '—',
     },
     {
       title: '',
@@ -274,6 +288,9 @@ export default function LeadContactsTab({
                 <Form.Item name="phone" label="Телефон">
                   <Input prefix={<PhoneOutlined />} placeholder="+7..." />
                 </Form.Item>
+                <Form.Item name="phone_extension" label="Добавочный">
+                  <Input placeholder="1234" />
+                </Form.Item>
                 <Form.Item name="email" label="Email">
                   <Input prefix={<MailOutlined />} placeholder="email@example.com" />
                 </Form.Item>
@@ -298,6 +315,14 @@ export default function LeadContactsTab({
               <Input.TextArea rows={3} placeholder="Комментарий" />
             </Form.Item>
           )}
+
+          <Form.Item name="tags" label="Теги">
+            <EntityTagSelect
+              availableTags={tagsCatalog?.results ?? []}
+              placeholder="При необходимости"
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
 
           <Form.Item name="current" label="Актуальный" valuePropName="checked">
             <Switch size="small" />
@@ -349,6 +374,9 @@ export default function LeadContactsTab({
                 <Form.Item name="phone" label="Телефон">
                   <Input prefix={<PhoneOutlined />} placeholder="+7..." />
                 </Form.Item>
+                <Form.Item name="phone_extension" label="Добавочный">
+                  <Input placeholder="1234" />
+                </Form.Item>
                 <Form.Item name="email" label="Email">
                   <Input prefix={<MailOutlined />} placeholder="email@example.com" />
                 </Form.Item>
@@ -367,6 +395,14 @@ export default function LeadContactsTab({
               <Input placeholder="Отдел" />
             </Form.Item>
           )}
+
+          <Form.Item name="tags" label="Теги">
+            <EntityTagSelect
+              availableTags={tagsCatalog?.results ?? []}
+              placeholder="При необходимости"
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
         </Form>
       </Modal>
     </div>

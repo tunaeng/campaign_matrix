@@ -2,13 +2,16 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, Table, Button, Space, Typography, Tag, Modal, Form, Input, App } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import { useFunnels, useCreateFunnel, useDeleteFunnel } from '../../api/hooks';
+import { useFunnels, useCreateFunnel, useDeleteFunnel, useOrganizationTags } from '../../api/hooks';
 import type { Funnel } from '../../types';
+import EntityTagSelect, { renderTagChips } from '../../components/EntityTagSelect';
 
 export default function FunnelListPage() {
   const { message } = App.useApp();
   const navigate = useNavigate();
-  const { data: funnels, isLoading } = useFunnels();
+  const { data: tagsCatalog } = useOrganizationTags({ page_size: 500, tag_type: 'funnels' });
+  const [tagFilter, setTagFilter] = useState<number[]>([]);
+  const { data: funnels, isLoading } = useFunnels({ tags: tagFilter.length ? tagFilter.join(',') : undefined });
   const createFunnel = useCreateFunnel();
   const deleteFunnel = useDeleteFunnel();
   const [modalOpen, setModalOpen] = useState(false);
@@ -17,7 +20,12 @@ export default function FunnelListPage() {
   const handleCreate = async () => {
     try {
       const values = await form.validateFields();
-      const result = await createFunnel.mutateAsync(values);
+      const { name, description, tags } = values;
+      const result = await createFunnel.mutateAsync({
+        name,
+        description,
+        tags: tags || [],
+      });
       message.success('Воронка создана');
       setModalOpen(false);
       form.resetFields();
@@ -64,6 +72,13 @@ export default function FunnelListPage() {
       align: 'center' as const,
     },
     {
+      title: 'Теги',
+      key: 'tags',
+      width: 220,
+      render: (_: unknown, row: Funnel) =>
+        renderTagChips(row.tag_names, tagsCatalog?.results, row.tags) || '—',
+    },
+    {
       title: 'Статус',
       dataIndex: 'is_active',
       key: 'is_active',
@@ -94,6 +109,16 @@ export default function FunnelListPage() {
       </Space>
 
       <Card>
+        <Space style={{ marginBottom: 12 }}>
+          <Typography.Text type="secondary">Фильтр по тегам:</Typography.Text>
+          <EntityTagSelect
+            availableTags={tagsCatalog?.results ?? []}
+            value={tagFilter}
+            onChange={setTagFilter}
+            placeholder="Все воронки"
+            style={{ minWidth: 260 }}
+          />
+        </Space>
         <Table
           dataSource={funnels?.results || []}
           columns={columns}
@@ -118,6 +143,13 @@ export default function FunnelListPage() {
           </Form.Item>
           <Form.Item name="description" label="Описание">
             <Input.TextArea rows={3} placeholder="Краткое описание сценария" />
+          </Form.Item>
+          <Form.Item name="tags" label="Теги">
+            <EntityTagSelect
+              availableTags={tagsCatalog?.results ?? []}
+              placeholder="Необязательно"
+              style={{ width: '100%' }}
+            />
           </Form.Item>
         </Form>
       </Modal>

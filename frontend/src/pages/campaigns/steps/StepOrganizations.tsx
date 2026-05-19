@@ -1,14 +1,13 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import {
-  Table, Select, TreeSelect, Space, Typography, Input, Tag, Switch, Button,
-  DatePicker, InputNumber, Card, Divider, Tooltip, Popover,
+  Table, Select, TreeSelect, Space, Typography, Input, Tag, Button,
+  DatePicker, InputNumber, Card, Tooltip, Popover,
 } from 'antd';
 import { PlusOutlined, DeleteOutlined, WarningOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
-  useExternalOrganizations, useExternalFedDistricts,
-  useExternalOrgTypes, useExternalProfActivities, useFunnels, useFunnel,
-  useDemandMatrix, usePrograms,
+  useOrganizations, useFederalDistricts, useRegions,
+  useOrganizationTags, useFunnels, useFunnel, useDemandMatrix, usePrograms,
 } from '../../../api/hooks';
 
 /** Добавить N рабочих дней к дате (пропуская сб/вс). */
@@ -30,17 +29,24 @@ interface Props {
 }
 
 export default function StepOrganizations({ data, onChange }: Props) {
+  const ORG_TYPE_OPTIONS = [
+    { value: 'roiv', label: 'РОИВ' },
+    { value: 'federal', label: 'Федеральная' },
+    { value: 'municipal', label: 'Муниципальная' },
+    { value: 'private', label: 'Коммерческая' },
+    { value: 'company_branch', label: 'Подразделение (без ИНН)' },
+    { value: 'other', label: 'Другое' },
+  ];
   const [orgType, setOrgType] = useState<string>();
-  // encoded as "district:ИМЯ" or "region:ИМЯ", multiple
+  const [searchText, setSearchText] = useState('');
+  const [tagIds, setTagIds] = useState<number[]>([]);
+  // encoded as "district:ID" or "region:ID", multiple
   const [regionSelection, setRegionSelection] = useState<string[]>([]);
-  // multiple prof activities (tags mode)
-  const [profActivityList, setProfActivityList] = useState<string[]>(data.profActivityList || []);
-  const [federalOnly, setFederalOnly] = useState(false);
   const [searchTriggered, setSearchTriggered] = useState(false);
 
-  const { data: fedDistricts } = useExternalFedDistricts();
-  const { data: orgTypes } = useExternalOrgTypes();
-  const { data: profActivitiesData } = useExternalProfActivities();
+  const { data: fedDistrictsData } = useFederalDistricts();
+  const { data: regionsData } = useRegions({ page_size: 500 });
+  const { data: tagsData } = useOrganizationTags({ page_size: 500, tag_type: 'organizations' });
   const { data: funnelsData } = useFunnels({ is_active: true });
   const { data: demandMatrix } = useDemandMatrix(
     data.federal_operator ? { federal_operator: data.federal_operator } : undefined,
@@ -82,52 +88,80 @@ export default function StepOrganizations({ data, onChange }: Props) {
   }, [funnelDetail]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build treeData for TreeSelect: districts → regions
-  const regionTreeData = useMemo(() =>
-    (fedDistricts || []).map(d => ({
+  const regionTreeData = useMemo(() => {
+    const districts = fedDistrictsData?.results || [];
+    const regions = regionsData?.results || [];
+    return districts.map((d) => ({
       title: d.name,
-      value: `district:${d.name}`,
+      value: `district:${d.id}`,
       selectable: true,
-      children: (d.region || []).map(r => ({
-        title: r.name,
-        value: `region:${r.name}`,
-      })),
-    })),
-    [fedDistricts],
-  );
+      children: regions
+        .filter((r) => r.federal_district === d.id)
+        .map((r) => ({
+          title: r.name,
+          value: `region:${r.id}`,
+        })),
+    }));
+  }, [fedDistrictsData, regionsData]);
 
   const searchParams = useMemo(() => {
     if (!searchTriggered) return undefined;
     const params: Record<string, any> = {};
-    if (orgType) params.type = orgType;
+    if (searchText.trim()) params.search = searchText.trim();
+    if (orgType) params.org_type = orgType;
+    if (tagIds.length) params.tags = tagIds.join(',');
     if (regionSelection.length > 0) {
-      const districts = regionSelection
+      const districtIds = regionSelection
         .filter(v => v.startsWith('district:'))
-        .map(v => v.slice('district:'.length));
-      const regions = regionSelection
+        .map(v => Number(v.slice('district:'.length)))
+        .filter((id) => Number.isFinite(id));
+      const selectedRegionIds = regionSelection
         .filter(v => v.startsWith('region:'))
-        .map(v => v.slice('region:'.length));
-      if (districts.length) params.fed_districts = districts.join(',');
-      if (regions.length) params.regions = regions.join(',');
+        .map(v => Number(v.slice('region:'.length)))
+        .filter((id) => Number.isFinite(id));
+      const districtRegionIds = (regionsData?.results || [])
+        .filter((r) => districtIds.includes(r.federal_district))
+        .map((r) => r.id);
+      const mergedRegionIds = Array.from(new Set([...selectedRegionIds, ...districtRegionIds]));
+      if (mergedRegionIds.length) params.region_ids = mergedRegionIds.join(',');
     }
-    if (profActivityList.length > 0) params.prof_activities = profActivityList.join(',');
-    if (federalOnly || hasFederalFunnel) params.federal = 'true';
+    if (hasFederalFunnel) params.org_type = 'roiv';
     return params;
-  }, [searchTriggered, orgType, regionSelection, profActivityList, federalOnly, hasFederalFunnel]);
+  }, [searchTriggered, searchText, orgType, tagIds, regionSelection, regionsData, hasFederalFunnel]);
 
-  // Sync profActivityList changes up to formData
-  const prevProfRef = useRef(profActivityList);
-  useEffect(() => {
-    if (prevProfRef.current !== profActivityList) {
-      prevProfRef.current = profActivityList;
-      onChange({ profActivityList });
-    }
-  }, [profActivityList]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const { data: externalOrgs, isLoading: loadingOrgs } = useExternalOrganizations(searchParams);
-
-  const orgList = externalOrgs || [];
-
-  const selectedOrgNames = new Set(data.selectedExternalOrgs.map(o => o.name));
+  const { data: organizationsData, isLoading: loadingOrgs } = useOrganizations(searchParams);
+  const districtNameById = useMemo(() => {
+    const map: Record<number, string> = {};
+    for (const d of fedDistrictsData?.results || []) map[d.id] = d.name;
+    return map;
+  }, [fedDistrictsData]);
+  const orgList = useMemo(() => {
+    return (organizationsData?.results || []).map((o) => {
+      const regionObj = (regionsData?.results || []).find((r) => r.id === o.region);
+      const fedDistrictName = regionObj ? districtNameById[regionObj.federal_district] || '' : '';
+      return {
+        id: o.id,
+        name: o.name,
+        full_name: o.name,
+        type: o.org_type_display || '',
+        region: o.region_name || '',
+        region_id: o.region ?? null,
+        federal_company: o.org_type === 'federal',
+        fed_district: fedDistrictName,
+        prof_activity: '',
+        projects: [],
+        is_active: true,
+        is_our_side: o.is_our_side,
+        inn: o.inn,
+        created_at: o.created_at || '',
+        updated_at: o.updated_at || '',
+      };
+    });
+  }, [organizationsData, regionsData, districtNameById]);
+  const regionOptions = useMemo(
+    () => (regionsData?.results || []).map((r) => ({ value: r.id, label: r.name })),
+    [regionsData],
+  );
 
   // region name -> region id mapping from demand matrix
   const regionNameToId = useMemo(() => {
@@ -160,7 +194,7 @@ export default function StepOrganizations({ data, onChange }: Props) {
     });
   };
 
-  const handleSelectOrg = (keys: React.Key[], rows: ExternalOrganization[]) => {
+  const handleSelectOrg = (keys: React.Key[], rows: any[]) => {
     const existing = new Map(data.selectedExternalOrgs.map(o => [o.name, o]));
     for (const row of rows) {
       if (!existing.has(row.name)) {
@@ -168,12 +202,39 @@ export default function StepOrganizations({ data, onChange }: Props) {
       }
     }
     const deselectedNames = orgList
-      .filter(o => !keys.includes(o.name))
+      .filter(o => !keys.includes(o.id))
       .map(o => o.name);
     for (const name of deselectedNames) {
       existing.delete(name);
     }
-    onChange({ selectedExternalOrgs: Array.from(existing.values()) });
+    const selectedExternalOrgs = Array.from(existing.values());
+    const selectedOrgIds = new Set(selectedExternalOrgs.map((o) => o.id));
+    const federalOrgRegionSelections = { ...(data.federalOrgRegionSelections || {}) };
+    for (const org of selectedExternalOrgs) {
+      if (
+        org.federal_company
+        && federalOrgRegionSelections[org.id] == null
+        && org.region_id != null
+      ) {
+        federalOrgRegionSelections[org.id] = [org.region_id];
+      }
+    }
+    for (const orgId of Object.keys(federalOrgRegionSelections)) {
+      if (!selectedOrgIds.has(Number(orgId))) {
+        delete federalOrgRegionSelections[Number(orgId)];
+      }
+    }
+    onChange({ selectedExternalOrgs, federalOrgRegionSelections });
+  };
+
+  const updateFederalOrgRegions = (orgId: number, regionIds: number[]) => {
+    const uniqueIds = Array.from(new Set(regionIds));
+    onChange({
+      federalOrgRegionSelections: {
+        ...(data.federalOrgRegionSelections || {}),
+        [orgId]: uniqueIds,
+      },
+    });
   };
 
   const sortedStages = useMemo(
@@ -330,6 +391,29 @@ export default function StepOrganizations({ data, onChange }: Props) {
       },
     },
     {
+      title: 'Регионы лидов',
+      key: 'lead_regions',
+      width: 320,
+      render: (_: any, record: ExternalOrganization & { id: number; region_id?: number | null }) => {
+        const configured = data.federalOrgRegionSelections?.[record.id] || [];
+        const showPicker = record.federal_company || configured.length > 1;
+        if (!showPicker) return <Typography.Text type="secondary">—</Typography.Text>;
+        return (
+          <Select
+            mode="multiple"
+            size="small"
+            style={{ width: '100%' }}
+            placeholder="Выберите регионы для лидов"
+            value={configured}
+            onChange={(v) => updateFederalOrgRegions(record.id, v)}
+            options={regionOptions}
+            maxTagCount={2}
+            optionFilterProp="label"
+          />
+        );
+      },
+    },
+    {
       title: 'Очередь',
       key: 'queue',
       width: 140,
@@ -354,96 +438,116 @@ export default function StepOrganizations({ data, onChange }: Props) {
         <Button
           type="text" danger size="small" icon={<DeleteOutlined />}
           onClick={() => {
+            const federalOrgRegionSelections = { ...(data.federalOrgRegionSelections || {}) };
+            delete federalOrgRegionSelections[(record as any).id];
             onChange({
               selectedExternalOrgs: data.selectedExternalOrgs.filter(o => o.name !== record.name),
+              federalOrgRegionSelections,
             });
           }}
         />
       ),
     },
   ];
+  const federalWithoutRegionsCount = data.selectedExternalOrgs.filter(
+    (o) => o.federal_company && (data.federalOrgRegionSelections?.[o.id]?.length ?? 0) === 0,
+  ).length;
 
+  const orgSearchContent = (
+    <>
+          <Card size="small" style={{ marginBottom: 16 }} title="Поиск организаций">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+              <Select
+                placeholder="Тип организации"
+                allowClear
+                style={{ width: 200 }}
+                value={orgType}
+                onChange={setOrgType}
+                options={ORG_TYPE_OPTIONS}
+                disabled={hasFederalFunnel}
+              />
+              <Input
+                placeholder="Поиск по названию / ИНН"
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                style={{ width: 260 }}
+                allowClear
+              />
+              <TreeSelect
+                placeholder="Фильтр по округам/регионам"
+                allowClear
+                showSearch
+                treeCheckable
+                showCheckedStrategy={TreeSelect.SHOW_PARENT}
+                style={{ width: 320 }}
+                value={regionSelection}
+                onChange={setRegionSelection}
+                treeData={regionTreeData}
+                treeNodeFilterProp="title"
+                dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
+                maxTagCount={2}
+                maxTagPlaceholder={(omitted) => `+${omitted.length} ещё`}
+                treeLine
+              />
+              <Select
+                mode="multiple"
+                allowClear
+                placeholder="Теги"
+                style={{ width: 260 }}
+                value={tagIds}
+                onChange={(v) => setTagIds(v)}
+                options={(tagsData?.results || []).map((t) => ({ value: t.id, label: t.name }))}
+              />
+              <Button type="primary" onClick={() => setSearchTriggered(true)}>
+                Найти организации
+              </Button>
+            </div>
+
+            {searchTriggered && (
+              <Table
+                dataSource={orgList}
+                columns={columns}
+                rowKey="id"
+                loading={loadingOrgs}
+                size="small"
+                style={{ marginTop: 12 }}
+                pagination={{ pageSize: 10, showTotal: (t) => `Всего: ${t}` }}
+                rowSelection={{
+                  selectedRowKeys: data.selectedExternalOrgs.map((o: any) => o.id).filter(Boolean),
+                  onChange: handleSelectOrg,
+                }}
+              />
+            )}
+          </Card>
+
+          {data.selectedExternalOrgs.length > 0 && (
+            <Card size="small" style={{ marginBottom: 16 }} title={`Выбранные организации (${data.selectedExternalOrgs.length})`}>
+              {federalWithoutRegionsCount > 0 && (
+                <Typography.Text type="danger" style={{ display: 'block', marginBottom: 8 }}>
+                  Выберите минимум один регион для всех федеральных организаций.
+                </Typography.Text>
+              )}
+              <Table
+                dataSource={data.selectedExternalOrgs}
+                columns={selectedColumns}
+                rowKey="id"
+                size="small"
+                pagination={{ pageSize: 10 }}
+              />
+            </Card>
+          )}
+    </>
+  );
   return (
     <div>
       <Typography.Title level={5}>Организации и очереди</Typography.Title>
 
-      <Card size="small" style={{ marginBottom: 16 }} title="Поиск организаций">
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-          <Select
-            placeholder="Тип организации"
-            allowClear
-            style={{ width: 200 }}
-            value={orgType}
-            onChange={setOrgType}
-            options={(orgTypes || []).map(t => ({ value: t.name, label: t.name }))}
-          />
-          <TreeSelect
-            placeholder="Фильтр по округам/регионам"
-            allowClear
-            showSearch
-            treeCheckable
-            showCheckedStrategy={TreeSelect.SHOW_PARENT}
-            style={{ width: 320 }}
-            value={regionSelection}
-            onChange={setRegionSelection}
-            treeData={regionTreeData}
-            treeNodeFilterProp="title"
-            dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
-            maxTagCount={2}
-            maxTagPlaceholder={(omitted) => `+${omitted.length} ещё`}
-            treeLine
-          />
-          <Select
-            mode="multiple"
-            placeholder={hasFederalFunnel ? 'Сфера деятельности (мин. 1)' : 'Сфера деятельности'}
-            value={profActivityList}
-            onChange={setProfActivityList}
-            style={{ minWidth: 220, maxWidth: 360 }}
-            allowClear
-            options={(profActivitiesData || []).map(a => ({ value: a.name, label: a.name }))}
-            status={hasFederalFunnel && profActivityList.length === 0 ? 'warning' : undefined}
-          />
-          <Button type="primary" onClick={() => setSearchTriggered(true)}>
-            Найти организации
-          </Button>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-          <Switch checked={federalOnly} onChange={setFederalOnly} size="small" />
-          <Typography.Text>Только федеральные</Typography.Text>
-        </div>
-
-        {searchTriggered && (
-          <Table
-            dataSource={orgList}
-            columns={columns}
-            rowKey="name"
-            loading={loadingOrgs}
-            size="small"
-            style={{ marginTop: 12 }}
-            pagination={{ pageSize: 10, showTotal: (t) => `Всего: ${t}` }}
-            rowSelection={{
-              selectedRowKeys: Array.from(selectedOrgNames),
-              onChange: handleSelectOrg,
-            }}
-          />
-        )}
-      </Card>
-
-      {data.selectedExternalOrgs.length > 0 && (
-        <Card size="small" style={{ marginBottom: 16 }} title={`Выбранные организации (${data.selectedExternalOrgs.length})`}>
-          <Table
-            dataSource={data.selectedExternalOrgs}
-            columns={selectedColumns}
-            rowKey="name"
-            size="small"
-            pagination={{ pageSize: 10 }}
-          />
-        </Card>
-      )}
+      {orgSearchContent}
 
       <Card size="small" title="Очереди">
         <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-          Для каждой очереди задайте дату старта и количество рабочих дней на каждый этап воронки. По умолчанию все организации попадают в Очередь 1.
+          Для каждой очереди задайте дату старта и количество рабочих дней на каждый этап воронки.
+          {' '}По умолчанию все организации попадают в Очередь 1.
         </Typography.Text>
         {data.queues.map((q, qIdx) => (
           <Card

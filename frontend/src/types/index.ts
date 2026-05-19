@@ -6,7 +6,7 @@ export interface User {
   last_name: string;
   patronymic: string;
   phone: string;
-  role: 'admin' | 'manager';
+  role: 'admin' | 'manager' | 'specialist';
   full_name: string;
   is_active: boolean;
 }
@@ -85,16 +85,69 @@ export interface Organization {
   id: number;
   name: string;
   short_name: string;
-  inn: string;
+  inn: string | null;
   org_type: string;
   org_type_display: string;
   region: number | null;
   region_name: string | null;
   parent_organization: number | null;
   parent_organization_name: string | null;
+  parent_organization_short_name?: string | null;
+  is_our_side: boolean;
+  description: string;
+  tags?: number[];
+  tag_names?: string[];
   has_interaction_history: boolean;
   last_interaction_date: string | null;
   interactions_count: number;
+  contact_person?: string;
+  contact_email?: string;
+  contact_phone?: string;
+  contact_phone_extension?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface OrganizationTag {
+  id: number;
+  name: string;
+  slug: string;
+  color: string;
+  tag_type: 'all' | 'organizations' | 'contacts' | 'funnels' | 'campaigns' | 'leads';
+  tag_type_display?: string;
+  category?: string;
+}
+
+export interface ProjectMembership {
+  id: number;
+  project: number;
+  organization: number;
+  organization_name: string;
+  role: 'customer' | 'federal_operator' | 'participant' | 'contractor' | 'implementer';
+  role_display: string;
+  notes: string;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface Project {
+  id: number;
+  name: string;
+  year: number;
+  code: string;
+  memberships: ProjectMembership[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ActingOrganization {
+  id: number;
+  user: number;
+  organization: number;
+  organization_name: string;
+  organization_inn: string;
+  is_primary: boolean;
+  created_at: string;
 }
 
 /** Сводка потребности по лидам кампании (суммы) */
@@ -111,10 +164,22 @@ export interface Campaign {
   name: string;
   status: 'draft' | 'active' | 'paused' | 'completed';
   status_display: string;
+  /** Операционная стадия кампании (не путать со стадией воронки лида) */
+  operational_stage?: '' | 'organization_list';
+  operational_stage_display?: string;
   federal_operator: number | null;
   federal_operator_name: string | null;
+  /** Сокращённое название ФО (поле short_name организации) */
+  federal_operator_short_name?: string | null;
+  federal_operators?: number[];
+  federal_operator_names?: string[];
+  project: number | null;
+  project_name: string | null;
+  acting_organization: number | null;
+  acting_organization_name: string | null;
   hypothesis: string;
   hypothesis_result: string;
+  collect_search_task?: string;
   created_by: number | null;
   created_by_name: string | null;
   total_demand: number;
@@ -130,6 +195,8 @@ export interface Campaign {
   /** Периоды по очередям */
   queue_periods?: { name: string; queue_number: number; start_date: string; end_date: string | null }[];
   demand_summary?: CampaignDemandSummary;
+  tags?: number[];
+  tag_names?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -173,6 +240,10 @@ export interface CampaignRegion {
   queue_name: string | null;
   manager: number | null;
   manager_name: string | null;
+  primary_contact_specialist?: number | null;
+  primary_contact_specialist_name?: string | null;
+  demand_quota?: number;
+  search_task?: string;
 }
 
 /** Снимок основного контакта лида (API) */
@@ -210,6 +281,8 @@ export interface CampaignOrganization {
   demand_count: number;
   notes: string;
   primary_contact_preview?: LeadPrimaryContactOrgPreview | null;
+  /** Теги организации-участника кампании */
+  organization_tags?: number[];
 }
 
 export interface DemandMatrix {
@@ -287,6 +360,10 @@ export interface StageChecklistItem {
   order: number;
   confirmation_types: ('text' | 'file' | 'select' | 'contact')[];
   confirmation_types_display: string[];
+  primary_contact_specialist?: number | null;
+  primary_contact_specialist_name?: string | null;
+  communication_step?: '' | 'email_prepared' | 'email_sent' | 'response_received' | 'result_recorded';
+  communication_step_display?: string;
   options: ChecklistItemOption[];
 }
 
@@ -297,6 +374,12 @@ export interface FunnelStage {
   order: number;
   deadline_days: number;
   is_rejection: boolean;
+  responsible_role?: 'manager' | 'primary_contact_specialist';
+  is_collect_stage?: boolean;
+  selection_mode?: '' | 'regions';
+  search_task?: string;
+  primary_contact_specialist?: number | null;
+  primary_contact_specialist_name?: string | null;
   checklist_items: StageChecklistItem[];
 }
 
@@ -305,6 +388,8 @@ export interface Funnel {
   name: string;
   description: string;
   is_active: boolean;
+  tags?: number[];
+  tag_names?: string[];
   stages_count?: number;
   created_at: string;
   updated_at: string;
@@ -329,13 +414,33 @@ export interface Contact {
   middle_name: string;
   position: string;
   phone: string;
+  phone_extension?: string;
   email: string;
   messenger: string;
   is_manager: boolean;
   department_name: string;
   full_name: string;
+  tags?: number[];
+  tag_names?: string[];
+  bitrix_contact_id: number | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface EntityFieldChange {
+  id: number;
+  organization: number | null;
+  organization_name: string | null;
+  contact: number | null;
+  contact_name: string | null;
+  field_name: string;
+  old_value: string;
+  new_value: string;
+  source: "manual" | "bulk" | "sync";
+  source_display: string;
+  changed_by: number | null;
+  changed_by_name: string | null;
+  changed_at: string;
 }
 
 export interface LeadChecklistFile {
@@ -368,6 +473,10 @@ export interface LeadChecklistValue {
   contact_phone: string;
   contact_email: string;
   contact_messenger: string;
+  primary_contact_specialist?: number | null;
+  primary_contact_specialist_name?: string | null;
+  communication_step?: '' | 'email_prepared' | 'email_sent' | 'response_received' | 'result_recorded';
+  communication_step_display?: string;
   completed_at: string | null;
   completed_by: number | null;
 }
@@ -421,6 +530,7 @@ export interface LeadStageDeadline {
   deadline_days: number;
   deadline_date: string | null;
   is_rejection: boolean;
+  is_collect_stage?: boolean;
 }
 
 export interface Lead {
@@ -428,6 +538,8 @@ export interface Lead {
   campaign: number;
   organization: number;
   organization_name: string;
+  region: number | null;
+  region_name?: string | null;
   organization_region: string | null;
   funnel: number;
   funnel_name: string;
@@ -438,6 +550,10 @@ export interface Lead {
   current_stage_is_rejection: boolean;
   manager: number | null;
   manager_name: string | null;
+  primary_contact_specialist?: number | null;
+  primary_contact_specialist_name?: string | null;
+  primary_contact_status?: 'new' | 'email_prepared' | 'email_sent' | 'response_received' | 'result_recorded' | 'rejected';
+  primary_contact_result?: string;
   forecast_demand: number | null;
   demand_count: number;
   demand_collected_declared?: number;
@@ -447,6 +563,7 @@ export interface Lead {
   notes: string;
   checklist_progress: { total: number; completed: number } | null;
   checklist_summary: { text: string; done: boolean }[];
+  tasks_summary?: LeadTaskSummary[];
   last_interaction: {
     contact_person: string;
     date: string | null;
@@ -455,6 +572,10 @@ export interface Lead {
   } | null;
   /** Основной контакт организации: не больше одного лида на организацию */
   primary_contact?: LeadPrimaryContactBrief | null;
+  tags?: number[];
+  /** Теги связанной организации (для фильтров и отображения) */
+  organization_tags?: number[];
+  tag_names?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -463,20 +584,26 @@ export interface LeadDetail extends Lead {
   checklist_values: LeadChecklistValue[];
   interactions: LeadInteraction[];
   stage_deadlines: LeadStageDeadline[];
+  subfunnels?: LeadSubfunnel[];
 }
 
 // External organizations (Bitrix API)
 
 export interface ExternalOrganization {
+  id?: number;
   name: string;
   full_name: string;
   type: string;
   region: string;
+  region_id?: number | null;
   federal_company: boolean;
   fed_district: string;
   prof_activity: string;
   projects: { name: string }[];
   is_active: boolean;
+  /** Признак «наша организация» в Bitrix (если отдаёт API) */
+  is_our_side?: boolean;
+  inn?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -488,6 +615,83 @@ export interface ExternalFedDistrict {
 
 export interface ExternalOrgType {
   name: string;
+}
+
+export interface ExternalContact {
+  id?: number;
+  type: 'person' | 'department' | 'main' | 'other';
+  comment: string;
+  current: boolean;
+  organization: string; // INN
+  first_name?: string;
+  last_name?: string;
+  middle_name?: string;
+  position?: string;
+  first_name_dat?: string;
+  last_name_dat?: string;
+  middle_name_dat?: string;
+  position_dat?: string;
+  manager?: boolean;
+  department_name?: string;
+}
+
+export interface ExternalContactHistoryRecord extends ExternalContact {
+  history_id: number;
+  history_date: string;
+  history_type: '+' | '~' | '-';
+  history_user: string | null;
+}
+
+export interface ExternalCommunicationContact {
+  id: number;
+  fio: string | null;
+  position: string | null;
+}
+
+export interface ExternalCommunication {
+  id: number;
+  counterparty_organization: string;
+  counterparty_organization_name: string;
+  counterparty_contact: ExternalCommunicationContact | null;
+  our_organization: string;
+  our_organization_name: string;
+  channel: string;
+  channel_display: string;
+  occurred_at: string;
+  result: string;
+  project: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExternalCommunicationPayload {
+  counterparty_organization: string;
+  counterparty_contact?: number | null;
+  our_organization: string;
+  channel: string;
+  occurred_at: string;
+  result: string;
+  project?: string | null;
+}
+
+/** Ответ POST /external-contacts/sync-user/ — контакт на каждый ИНН */
+export interface SyncUserAsOurSideContactResultItem {
+  organization_inn: string;
+  ok: boolean;
+  status_code?: number;
+  external_contact?: unknown;
+  upstream_payload?: unknown;
+  detail?: string;
+  /** Локальный Contact в Matrix (если есть Organization с этим ИНН и sync_local) */
+  local_contact?: Contact | null;
+  /** ok | no_local_org | off */
+  local_sync?: string;
+}
+
+export interface SyncUserAsOurSideContactResponse {
+  user_id: number;
+  organization_inns: string[];
+  results: SyncUserAsOurSideContactResultItem[];
 }
 
 // Campaign Funnel
@@ -505,4 +709,366 @@ export interface QueueStageDeadline {
   funnel_stage: number;
   stage_name: string;
   deadline_days: number;
+}
+
+export interface WorkloadDashboardRow {
+  user_id: number;
+  user_name: string;
+  role: 'manager' | 'specialist';
+  active_leads: number;
+  pending_checklist: number;
+  overdue_stage: number;
+  overdue_checklist: number;
+  tasks_in_progress: number;
+  tasks_overdue: number;
+}
+
+export interface WorkloadDashboardManagerLead {
+  lead_id: number;
+  organization_name: string;
+  stage_name: string | null;
+  stage_deadline: string | null;
+  stage_overdue: boolean;
+  pending_checklist: number;
+  overdue_checklist: number;
+}
+
+export interface WorkloadDashboardManagerCampaign {
+  campaign_id: number;
+  campaign_name: string;
+  leads: WorkloadDashboardManagerLead[];
+}
+
+export interface WorkloadDashboardManager {
+  user_id: number;
+  user_name: string;
+  campaigns: WorkloadDashboardManagerCampaign[];
+}
+
+export interface WorkloadDashboardTaskStats {
+  total: number;
+  todo: number;
+  in_progress: number;
+  blocked: number;
+  done: number;
+  overdue: number;
+}
+
+export interface WorkloadDashboardSpecialistTemplate {
+  template_id: number;
+  template_name: string;
+  stats: WorkloadDashboardTaskStats;
+}
+
+/** Задача в блоке специалиста (устаревший формат API до агрегированных stats). */
+export interface WorkloadDashboardSpecialistTask {
+  id: number;
+  status: string;
+  is_overdue?: boolean;
+}
+
+export interface WorkloadDashboardSpecialistCampaign {
+  campaign_id: number;
+  campaign_name: string;
+  stats?: WorkloadDashboardTaskStats | null;
+  templates?: WorkloadDashboardSpecialistTemplate[];
+  /** Список задач — если API ещё не отдаёт stats. */
+  tasks?: WorkloadDashboardSpecialistTask[];
+}
+
+export interface WorkloadDashboardSpecialist {
+  user_id: number;
+  user_name: string;
+  campaigns: WorkloadDashboardSpecialistCampaign[];
+  overdue_total?: number;
+}
+
+export interface WorkloadDashboardChartsPoint {
+  campaign_id?: number;
+  campaign_name?: string;
+  user_id?: number;
+  user_name?: string;
+  date?: string;
+  in_progress?: number;
+  overdue?: number;
+  done_in_period?: number;
+  opened?: number;
+  completed?: number;
+}
+
+export interface WorkloadDashboardCharts {
+  scope: 'manager' | 'specialist';
+  by_campaign: WorkloadDashboardChartsPoint[];
+  by_user: WorkloadDashboardChartsPoint[];
+  by_day: WorkloadDashboardChartsPoint[];
+  status_pie: Array<{
+    status: string;
+    count: number;
+  }>;
+}
+
+export interface WorkloadDashboardResponse {
+  rows: WorkloadDashboardRow[];
+  totals: {
+    active_leads: number;
+    pending_checklist: number;
+    overdue_stage: number;
+    overdue_checklist: number;
+    tasks_in_progress: number;
+    tasks_overdue: number;
+  };
+  managers: WorkloadDashboardManager[];
+  specialists: WorkloadDashboardSpecialist[];
+  charts: WorkloadDashboardCharts;
+  meta: {
+    role: 'all' | 'manager' | 'specialist';
+    campaign: number | null;
+    funnel: number | null;
+    user: number | null;
+    date_from: string | null;
+    date_to: string | null;
+    period_mode: 'activity';
+  };
+}
+
+export interface RoleDefinition {
+  id: number;
+  code: string;
+  name: string;
+  description: string;
+  scope_type: 'global' | 'campaign' | 'funnel' | 'subfunnel';
+  is_active: boolean;
+  is_system: boolean;
+}
+
+export interface UserRoleAssignment {
+  id: number;
+  user: number;
+  user_name: string;
+  role: number;
+  role_name: string;
+  scope_type: 'global' | 'campaign' | 'funnel' | 'subfunnel';
+  scope_id: number | null;
+  is_primary: boolean;
+}
+
+export interface SubfunnelTemplateItem {
+  id: number;
+  template: number;
+  title: string;
+  order: number;
+  execution_type: 'stage' | 'checklist_item' | 'stage_range_checklist';
+  stage: number | null;
+  stage_name?: string | null;
+  default_role: number | null;
+  default_role_name?: string | null;
+  default_specialist: number | null;
+  default_specialist_name?: string | null;
+}
+
+export interface TaskTemplateStage {
+  id: number;
+  template: number;
+  name: string;
+  order: number;
+  is_terminal: boolean;
+  sla_days: number;
+}
+
+export interface SubfunnelTemplate {
+  id: number;
+  name: string;
+  slug: string;
+  description: string;
+  owner_role: number | null;
+  owner_role_name?: string | null;
+  is_active: boolean;
+  version: number;
+  stages: TaskTemplateStage[];
+  items: SubfunnelTemplateItem[];
+}
+
+export interface SubfunnelTemplateBinding {
+  id: number;
+  funnel: number;
+  template: number;
+  template_name: string;
+  binding_type: 'stage' | 'checklist_item' | 'stage_range_checklist';
+  target_stage: number | null;
+  target_checklist_item: number | null;
+  from_stage: number | null;
+  to_stage: number | null;
+  role: number | null;
+  role_name?: string | null;
+  default_specialist: number | null;
+  default_specialist_name?: string | null;
+  is_active: boolean;
+}
+
+export interface CampaignSubfunnel {
+  id: number;
+  campaign: number;
+  funnel: number;
+  template: number;
+  template_name: string;
+  binding: number | null;
+  role: number | null;
+  role_name?: string | null;
+  default_assignee: number | null;
+  default_assignee_name?: string | null;
+  template_version: number;
+  is_active: boolean;
+}
+
+export interface LeadSubfunnelChecklistValue {
+  id: number;
+  lead_subfunnel: number;
+  template_item: number;
+  template_item_title: string;
+  template_item_order: number;
+  template_item_stage_id?: number | null;
+  template_item_stage_name?: string | null;
+  is_completed: boolean;
+  text_value: string;
+  assignee: number | null;
+  assignee_name?: string | null;
+  completed_at: string | null;
+  completed_by: number | null;
+  completed_by_name?: string | null;
+}
+
+export interface LeadTaskSummary {
+  id: number;
+  template_name: string;
+  stage_name: string | null;
+  status: 'todo' | 'in_progress' | 'blocked' | 'done';
+  done: boolean;
+  progress: { total: number; completed: number };
+}
+
+export interface LeadSubfunnel {
+  id: number;
+  lead: number | null;
+  campaign_subfunnel: number;
+  campaign_region?: number | null;
+  campaign_region_id?: number | null;
+  region_id?: number | null;
+  region_name?: string | null;
+  is_region_task?: boolean;
+  display_name?: string | null;
+  template_id: number;
+  template_name: string;
+  role_id: number | null;
+  role_name?: string | null;
+  status: 'todo' | 'in_progress' | 'blocked' | 'done';
+  current_template_stage: number | null;
+  current_template_stage_name?: string | null;
+  current_template_stage_order?: number | null;
+  can_advance_stage?: boolean;
+  can_retreat_stage?: boolean;
+  assignee: number | null;
+  assignee_name?: string | null;
+  due_at: string | null;
+  completed_at: string | null;
+  is_available: boolean;
+  checklist_values: LeadSubfunnelChecklistValue[];
+}
+
+export interface SubfunnelWorkspaceItem {
+  id: number;
+  campaign_id: number;
+  campaign_name: string;
+  lead_id: number | null;
+  lead_name: string;
+  is_region_task?: boolean;
+  campaign_region_id?: number | null;
+  region_id?: number | null;
+  region_name?: string | null;
+  stage_name: string | null;
+  template_id: number;
+  template_name: string;
+  role_id: number | null;
+  role_name: string | null;
+  assignee_id: number | null;
+  assignee_name: string | null;
+  status: 'todo' | 'in_progress' | 'blocked' | 'done';
+  current_template_stage_id?: number | null;
+  current_template_stage_name?: string | null;
+  current_template_stage_order?: number | null;
+  due_at: string | null;
+  is_overdue: boolean;
+  is_available: boolean;
+  checklist_progress?: { total: number; completed: number };
+}
+
+export interface CampaignCollectStageImportResult {
+  leads_created: number;
+  organizations_linked: number;
+  leads_by_region?: Record<string, number>;
+  errors: string[];
+  organizations_import?: { created: number; updated: number; skipped: number; errors?: string[] };
+  contacts_import?: { created: number; updated: number; skipped: number; errors?: string[] };
+}
+
+export interface OrganizationListCaptureResult {
+  results: Array<{
+    organization_id: number;
+    organization_name: string;
+    contact_id: number | null;
+    lead_id: number | null;
+    created: boolean;
+  }>;
+  summary: {
+    created: number;
+    skipped: number;
+    errors: string[];
+  };
+}
+
+export interface RegionTaskCaptureLeadItem {
+  lead_id: number;
+  organization_id: number;
+  organization_name: string | null;
+  primary_contact: string | null;
+  created_at: string | null;
+}
+
+export interface RegionTaskCaptureSummary {
+  campaign_region_id: number;
+  region_id: number;
+  region_name: string | null;
+  demand_quota: number;
+  leads_count: number;
+  organizations: RegionTaskCaptureLeadItem[];
+}
+
+export interface LeadSubfunnelBulkUpdateResult {
+  updated: number;
+  requested: number;
+  skipped: Array<{ id: number; reason: string }>;
+}
+
+export interface SubfunnelWorkspaceResponse {
+  view_mode: 'kanban' | 'table';
+  templates: Array<{
+    id: number;
+    name: string;
+    count: number;
+  }>;
+  active_template_id: number | null;
+  columns: Array<{
+    stage_id: number;
+    stage_name: string;
+    order: number;
+  }>;
+  items_by_stage: Record<string, SubfunnelWorkspaceItem[]>;
+  kanban: Array<{ status: string; stage_id?: number | null; stage_name?: string | null; items: SubfunnelWorkspaceItem[] }>;
+  table: SubfunnelWorkspaceItem[];
+  totals: {
+    all: number;
+    overdue: number;
+    todo: number;
+    in_progress: number;
+    done: number;
+  };
 }

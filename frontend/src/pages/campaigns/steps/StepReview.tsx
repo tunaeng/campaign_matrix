@@ -1,10 +1,16 @@
 import { useMemo } from 'react';
 import { Typography, Descriptions, Tag, Space, Divider, Table } from 'antd';
-import { usePrograms, useFederalOperators, useFunnels, useUsers } from '../../../api/hooks';
+import {
+  usePrograms, useFederalOperators, useFunnels, useUsers, useRegions,
+} from '../../../api/hooks';
 import type { CampaignFormData } from '../CampaignCreatePage';
 
 interface Props {
   data: CampaignFormData;
+}
+
+function leadForecastKey(orgId: number, regionId: number | null): string {
+  return `${orgId}:${regionId ?? 'null'}`;
 }
 
 export default function StepReview({ data }: Props) {
@@ -12,6 +18,7 @@ export default function StepReview({ data }: Props) {
   const { data: operators } = useFederalOperators();
   const { data: funnels } = useFunnels({ is_active: true });
   const { data: usersData } = useUsers();
+  const { data: regionsData } = useRegions({ page_size: 500 });
 
   const selectedPrograms = (programs?.results || []).filter((p) => data.selectedPrograms.includes(p.id));
   const selectedFunnels = (funnels?.results || []).filter((f) => data.selectedFunnels.includes(f.id));
@@ -29,6 +36,11 @@ export default function StepReview({ data }: Props) {
     for (const p of programs?.results || []) m[p.id] = p.name;
     return m;
   }, [programs]);
+  const regionsMap = useMemo(() => {
+    const m: Record<number, string> = {};
+    for (const r of regionsData?.results || []) m[r.id] = r.name;
+    return m;
+  }, [regionsData]);
 
   // Group orgs by queue
   const orgsByQueue = useMemo(() => {
@@ -50,16 +62,85 @@ export default function StepReview({ data }: Props) {
     if (data.forecastDemandMode === 'per_queue') {
       return data.forecastDemandPerQueue[queueNumber] ?? null;
     }
-    const sum = orgs.reduce((s, o) => s + (data.orgDistribution[o.name]?.forecastDemand || 0), 0);
+    const sum = orgs.reduce((s, o) => {
+      const regionIds = getOrgLeadRegionIds(o);
+      if (regionIds.length === 0) {
+        return s + (
+          data.orgRegionForecast?.[leadForecastKey(o.id, null)] ??
+          data.orgDistribution[o.name]?.forecastDemand ??
+          0
+        );
+      }
+      return s + regionIds.reduce((acc, regionId) => (
+        acc + (
+          data.orgRegionForecast?.[leadForecastKey(o.id, regionId)] ??
+          data.orgDistribution[o.name]?.forecastDemand ??
+          0
+        )
+      ), 0);
+    }, 0);
     return sum || null;
   };
+  const getOrgLeadRegionIds = (org: { id: number; region_id?: number | null; federal_company?: boolean }) => {
+    const selected = data.federalOrgRegionSelections?.[org.id] || [];
+    if (selected.length > 0) return selected;
+    return org.region_id != null ? [org.region_id] : [];
+  };
+  const getOrgLeadCount = (org: { id: number; region_id?: number | null; federal_company?: boolean }) =>
+    Math.max(getOrgLeadRegionIds(org).length, 1);
+  const getQueueLeadsCount = (queueNumber: number) => {
+    const orgs = orgsByQueue[queueNumber] || [];
+    return orgs.reduce((sum, org) => sum + getOrgLeadCount(org), 0);
+  };
+  const totalLeadsCount = useMemo(
+    () => data.selectedExternalOrgs.reduce((sum, org) => sum + getOrgLeadCount(org), 0),
+    [data.selectedExternalOrgs, data.federalOrgRegionSelections],
+  );
+  const collectRegionsRows = useMemo(
+    () =>
+      (data.regionData || []).map((row) => ({
+        ...row,
+        region_name: regionsMap[row.region_id] || `Регион #${row.region_id}`,
+        queue_name:
+          data.queues.find((q) => q.queue_number === (row.queue_number ?? 1))?.name
+          || `Очередь ${row.queue_number ?? 1}`,
+        manager_name: row.manager_id ? (usersMap[row.manager_id] || `#${row.manager_id}`) : null,
+        specialist_name: row.specialist_id ? (usersMap[row.specialist_id] || `#${row.specialist_id}`) : null,
+      })),
+    [data.regionData, data.queues, regionsMap, usersMap],
+  );
 
   const orgColumns = [
     { title: 'Организация', dataIndex: 'name', key: 'name', ellipsis: false },
-    { title: 'Регион', dataIndex: 'region', key: 'region', width: 140, ellipsis: true },
+    { title: 'Регион орг.', dataIndex: 'region', key: 'region', width: 130, ellipsis: true },
+    {
+      title: 'Регионы лидов',
+      key: 'lead_regions',
+      width: 260,
+      render: (_: any, record: any) => {
+        const regionIds = getOrgLeadRegionIds(record);
+        if (regionIds.length === 0) return <Typography.Text type="secondary">—</Typography.Text>;
+        return (
+          <Space size={[4, 4]} wrap>
+            {regionIds.map((id) => (
+              <Tag key={`${record.id}-${id}`} color="geekblue" style={{ marginRight: 0 }}>
+                {regionsMap[id] || `Регион #${id}`}
+              </Tag>
+            ))}
+          </Space>
+        );
+      },
+    },
+    {
+      title: 'Лидов',
+      key: 'lead_count',
+      width: 80,
+      render: (_: any, record: any) => getOrgLeadCount(record),
+    },
     {
       title: 'Программы',
       key: 'programs',
+      width: 420,
       render: (_: any, record: any) => {
         const dist = data.orgDistribution[record.name];
         const ids = dist?.programIds ?? data.selectedPrograms;
@@ -67,7 +148,20 @@ export default function StepReview({ data }: Props) {
         return (
           <Space size={[4, 4]} wrap>
             {ids.map((id) => programsMap[id] ? (
-              <Tag key={id} style={{ fontSize: 12 }}>{programsMap[id]}</Tag>
+              <Tag
+                key={id}
+                style={{
+                  fontSize: 12,
+                  whiteSpace: 'normal',
+                  wordBreak: 'break-word',
+                  lineHeight: 1.3,
+                  height: 'auto',
+                  marginRight: 0,
+                  maxWidth: '100%',
+                }}
+              >
+                {programsMap[id]}
+              </Tag>
             ) : null)}
           </Space>
         );
@@ -76,7 +170,7 @@ export default function StepReview({ data }: Props) {
     {
       title: 'Менеджер',
       key: 'manager',
-      width: 180,
+      width: 220,
       render: (_: any, record: any) => {
         const dist = data.orgDistribution[record.name];
         const name = dist?.managerId ? usersMap[dist.managerId] : null;
@@ -121,6 +215,16 @@ export default function StepReview({ data }: Props) {
             : '—'}
         </Descriptions.Item>
         <Descriptions.Item label="Гипотеза">{data.hypothesis || '—'}</Descriptions.Item>
+        <Descriptions.Item label="План лидов">
+          <Tag color="blue">{data.hasCollectStage ? data.regionData.length : totalLeadsCount}</Tag>
+        </Descriptions.Item>
+        {data.hasCollectStage && (
+          <Descriptions.Item label="Задание на поиск">
+            {data.collectSearchTask?.trim()
+              ? data.collectSearchTask
+              : <Typography.Text type="secondary">не заполнено</Typography.Text>}
+          </Descriptions.Item>
+        )}
         <Descriptions.Item label="Прогноз потребности">
           {data.forecastDemandMode === 'total' && (
             data.forecastDemandTotal != null
@@ -137,9 +241,25 @@ export default function StepReview({ data }: Props) {
               : <Typography.Text type="secondary">не задан</Typography.Text>;
           })()}
           {data.forecastDemandMode === 'per_org' && (() => {
-            const total = Object.values(data.orgDistribution).reduce((s, d) => s + (d.forecastDemand || 0), 0);
+            const total = data.selectedExternalOrgs.reduce((sum, org) => {
+              const regionIds = getOrgLeadRegionIds(org);
+              if (regionIds.length === 0) {
+                return sum + (
+                  data.orgRegionForecast?.[leadForecastKey(org.id, null)] ??
+                  data.orgDistribution[org.name]?.forecastDemand ??
+                  0
+                );
+              }
+              return sum + regionIds.reduce((acc, regionId) => (
+                acc + (
+                  data.orgRegionForecast?.[leadForecastKey(org.id, regionId)] ??
+                  data.orgDistribution[org.name]?.forecastDemand ??
+                  0
+                )
+              ), 0);
+            }, 0);
             return total > 0
-              ? <>{total} чел. <Tag>по организациям</Tag></>
+              ? <>{total} чел. <Tag>по лидам</Tag></>
               : <Typography.Text type="secondary">не задан</Typography.Text>;
           })()}
         </Descriptions.Item>
@@ -151,8 +271,49 @@ export default function StepReview({ data }: Props) {
         {selectedPrograms.length === 0 && <Typography.Text type="secondary">Не выбрано</Typography.Text>}
       </Space>
 
-      {data.queues.map((q) => {
+      {data.hasCollectStage && (
+        <>
+          <Divider orientation="left">Регионы отбора ({collectRegionsRows.length})</Divider>
+          {collectRegionsRows.length === 0 ? (
+            <Typography.Text type="secondary">Регионы не выбраны</Typography.Text>
+          ) : (
+            <Table
+              dataSource={collectRegionsRows}
+              size="small"
+              rowKey="region_id"
+              pagination={false}
+              columns={[
+                { title: 'Регион', dataIndex: 'region_name', key: 'region_name' },
+                { title: 'Очередь', dataIndex: 'queue_name', key: 'queue_name' },
+                { title: 'Квота', dataIndex: 'demand_quota', key: 'demand_quota', width: 120 },
+                {
+                  title: 'Задание на поиск',
+                  dataIndex: 'search_task',
+                  key: 'search_task',
+                  ellipsis: true,
+                  render: (v: string | undefined) => v?.trim() || <Typography.Text type="secondary">—</Typography.Text>,
+                },
+                {
+                  title: 'Менеджер',
+                  dataIndex: 'manager_name',
+                  key: 'manager_name',
+                  render: (v: string | null) => v || <Typography.Text type="secondary">не назначен</Typography.Text>,
+                },
+                {
+                  title: 'Специалист',
+                  dataIndex: 'specialist_name',
+                  key: 'specialist_name',
+                  render: (v: string | null) => v || <Typography.Text type="secondary">не назначен</Typography.Text>,
+                },
+              ]}
+            />
+          )}
+        </>
+      )}
+
+      {!data.hasCollectStage && data.queues.map((q) => {
         const orgs = orgsByQueue[q.queue_number] || [];
+        const queueLeads = getQueueLeadsCount(q.queue_number);
         const qDemand = getQueueDemand(q.queue_number);
         return (
           <div key={q.queue_number}>
@@ -165,6 +326,7 @@ export default function StepReview({ data }: Props) {
                   </Typography.Text>
                 )}
                 <Tag>{orgs.length} орг.</Tag>
+                <Tag color="blue">{queueLeads} лид.</Tag>
                 {qDemand != null && <Tag color="orange">прогноз: {qDemand}</Tag>}
               </Space>
             </Divider>
@@ -175,6 +337,7 @@ export default function StepReview({ data }: Props) {
                 rowKey="name"
                 size="small"
                 pagination={false}
+                scroll={{ x: 1400 }}
                 style={{ marginBottom: 8 }}
               />
             ) : (
@@ -184,7 +347,7 @@ export default function StepReview({ data }: Props) {
         );
       })}
 
-      {data.selectedExternalOrgs.length === 0 && (
+      {!data.hasCollectStage && data.selectedExternalOrgs.length === 0 && (
         <>
           <Divider orientation="left">Организации</Divider>
           <Typography.Text type="secondary">Не выбрано</Typography.Text>

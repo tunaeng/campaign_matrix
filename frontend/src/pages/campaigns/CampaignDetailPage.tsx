@@ -2,15 +2,19 @@ import { useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Descriptions, Tag, Tabs, Table, Spin, Typography,
-  Button, Space, Statistic, Row, Col, Select, App, Progress, Segmented, InputNumber, Tooltip,
+  Button, Space, Statistic, Row, Col, Select, App, Progress, Segmented, InputNumber, Tooltip, Modal, Upload,
 } from 'antd';
-import { ArrowLeftOutlined, AppstoreOutlined, UnorderedListOutlined, EditOutlined } from '@ant-design/icons';
-import { useCampaign, useUpdateCampaign } from '../../api/hooks';
-import type { CampaignDetail, CampaignOrganization, Lead, LeadPrimaryContactBrief } from '../../types';
+import { ArrowLeftOutlined, AppstoreOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { useCampaign, useUpdateCampaign, useDeleteCampaign, useOrganizationTags } from '../../api/hooks';
+import type { CampaignDetail, CampaignOrganization, Lead, LeadPrimaryContactBrief, OrganizationTag } from '../../types';
 import { daysSinceLastTouch } from '../../utils/leadTouch';
+import client from '../../api/client';
+import { getAxiosErrorMessage } from '../../api/errorMessage';
 import LeadBoardView from './LeadBoardView';
 import ContactPreviewModal from '../../components/ContactPreviewModal';
 import DemandQuotaPreview from '../../components/DemandQuotaPreview';
+import EntityTagSelect, { renderTagChips } from '../../components/EntityTagSelect';
+import type { UploadFile } from 'antd/es/upload/interface';
 
 const statusColors: Record<string, string> = {
   draft: 'default',
@@ -31,9 +35,13 @@ export default function CampaignDetailPage() {
   const { message } = App.useApp();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: campaign, isLoading } = useCampaign(id!);
+  const { data: campaign, isLoading, refetch: refetchCampaign } = useCampaign(id!);
   const updateCampaign = useUpdateCampaign(id!);
+  const deleteCampaign = useDeleteCampaign();
+  const { data: leadTagsCatalog } = useOrganizationTags({ page_size: 500, tag_type: 'leads' });
+  const { data: organizationTagsCatalog } = useOrganizationTags({ page_size: 500, tag_type: 'organizations' });
   const [leadsView, setLeadsView] = useState<'table' | 'board'>('board');
+  const [leadOrgTagFilter, setLeadOrgTagFilter] = useState<number[]>([]);
   const [orgContactPreview, setOrgContactPreview] = useState<{
     contact: LeadPrimaryContactBrief;
     leadId: number;
@@ -41,6 +49,9 @@ export default function CampaignDetailPage() {
   } | null>(null);
   const [touchMinDays, setTouchMinDays] = useState<number | undefined>(undefined);
   const [touchMaxDays, setTouchMaxDays] = useState<number | undefined>(undefined);
+  const [leadDemandImportOpen, setLeadDemandImportOpen] = useState(false);
+  const [leadDemandImportFiles, setLeadDemandImportFiles] = useState<UploadFile[]>([]);
+  const [leadDemandImportBusy, setLeadDemandImportBusy] = useState(false);
 
   const uniqueManagers = useMemo(() => {
     if (!campaign) return [];
@@ -77,9 +88,72 @@ export default function CampaignDetailPage() {
     });
   }, [campaign?.leads, touchMinDays, touchMaxDays]);
 
+  const campaignTagIdsPresent = useMemo(() => {
+    const s = new Set<number>();
+    if (!campaign) return s;
+    for (const l of campaign.leads ?? []) {
+      for (const tid of l.tags ?? []) s.add(tid);
+      for (const tid of l.organization_tags ?? []) s.add(tid);
+    }
+    for (const o of campaign.organizations ?? []) {
+      for (const tid of o.organization_tags ?? []) s.add(tid);
+    }
+    return s;
+  }, [campaign]);
+
+  /** Регионы из явных строк кампании, с лидов (region / подпись) и с заказчиков */
+  const distinctCampaignRegionsCount = useMemo(() => {
+    if (!campaign) return 0;
+    const keys = new Set<string>();
+    const addByName = (name: string | null | undefined) => {
+      const n = (name || '').trim().toLowerCase();
+      if (n) keys.add(`n:${n}`);
+    };
+    for (const r of campaign.campaign_regions ?? []) {
+      if (r.region != null) keys.add(`id:${r.region}`);
+      else addByName(r.region_name);
+    }
+    for (const l of campaign.leads ?? []) {
+      if (l.region != null) keys.add(`id:${l.region}`);
+      else addByName(l.organization_region);
+    }
+    for (const o of campaign.organizations ?? []) {
+      addByName(o.organization_region);
+    }
+    return keys.size;
+  }, [campaign]);
+
+  const leadOrgTagCatalogMerged = useMemo((): OrganizationTag[] => {
+    const byId = new Map<number, OrganizationTag>();
+    for (const t of leadTagsCatalog?.results ?? []) byId.set(t.id, t);
+    for (const t of organizationTagsCatalog?.results ?? []) byId.set(t.id, t);
+    const merged = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    if (!campaign) return merged;
+    const keep = new Set(campaignTagIdsPresent);
+    for (const id of leadOrgTagFilter) keep.add(id);
+    return merged.filter((t) => keep.has(t.id));
+  }, [
+    leadTagsCatalog?.results,
+    organizationTagsCatalog?.results,
+    campaign,
+    campaignTagIdsPresent,
+    leadOrgTagFilter,
+  ]);
+
+  const leadsAfterFilters = useMemo(() => {
+    if (!leadOrgTagFilter.length) return leadsAfterTouchFilter;
+    return leadsAfterTouchFilter.filter((l) => {
+      const onLead = l.tags || [];
+      const onOrg = l.organization_tags || [];
+      return leadOrgTagFilter.some(
+        (tid) => onLead.includes(tid) || onOrg.includes(tid),
+      );
+    });
+  }, [leadsAfterTouchFilter, leadOrgTagFilter]);
+
   const campaignForLeadsView: CampaignDetail | undefined = useMemo(
-    () => (campaign ? { ...campaign, leads: leadsAfterTouchFilter } : undefined),
-    [campaign, leadsAfterTouchFilter],
+    () => (campaign ? { ...campaign, leads: leadsAfterFilters } : undefined),
+    [campaign, leadsAfterFilters],
   );
 
   const queuePeriod = useMemo(() => {
@@ -103,11 +177,81 @@ export default function CampaignDetailPage() {
     }
   };
 
+  const handleDeleteCampaign = () => {
+    Modal.confirm({
+      title: 'Удалить кампанию?',
+      content:
+        'Кампания и связанные с ней лиды, очереди и настройки будут удалены без возможности восстановления.',
+      okText: 'Удалить',
+      okType: 'danger',
+      cancelText: 'Отмена',
+      onOk: async () => {
+        try {
+          await deleteCampaign.mutateAsync(Number(id));
+          message.success('Кампания удалена');
+          navigate('/campaigns');
+        } catch {
+          message.error('Не удалось удалить кампанию');
+        }
+      },
+    });
+  };
+
+  const downloadLeadDemandTemplate = async () => {
+    try {
+      const res = await client.get(`/campaigns/${id}/leads-demand-import-template/`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `campaign_${id}_leads_demand_template.xlsx`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      message.success('Шаблон скачан');
+    } catch (err) {
+      message.error(`Не удалось скачать шаблон: ${getAxiosErrorMessage(err)}`);
+    }
+  };
+
+  const submitLeadDemandImport = async () => {
+    const file = leadDemandImportFiles[0]?.originFileObj;
+    if (!file) {
+      message.error('Выберите .xlsx файл для импорта');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', file);
+    setLeadDemandImportBusy(true);
+    try {
+      const res = await client.post(`/campaigns/${id}/leads-demand-import/`, fd);
+      const data = res.data || {};
+      message.success(`Импорт завершён: обновлено ${data.updated ?? 0}, пропущено ${data.skipped ?? 0}`);
+      if (Array.isArray(data.errors) && data.errors.length) {
+        Modal.info({
+          title: 'Импорт завершён с замечаниями',
+          width: 860,
+          content: (
+            <div style={{ maxHeight: 320, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12 }}>
+              {data.errors.slice(0, 40).join('\n')}
+            </div>
+          ),
+        });
+      }
+      setLeadDemandImportOpen(false);
+      setLeadDemandImportFiles([]);
+      await refetchCampaign();
+    } catch (err) {
+      message.error(`Не удалось импортировать файл: ${getAxiosErrorMessage(err)}`);
+    } finally {
+      setLeadDemandImportBusy(false);
+    }
+  };
+
   const leads = campaign.leads || [];
+  const visibleLeadCount = leadsAfterFilters.length;
   const leadsTabLabel =
-    leads.length === leadsAfterTouchFilter.length
+    visibleLeadCount === leads.length
       ? `Лиды (${leads.length})`
-      : `Лиды (${leadsAfterTouchFilter.length}/${leads.length})`;
+      : `Лиды (${visibleLeadCount}/${leads.length})`;
   const funnelNames = campaign.campaign_funnels?.map(f => f.funnel_name) || [];
 
   const programColumns = [
@@ -145,6 +289,12 @@ export default function CampaignDetailPage() {
       key: 'funnel',
       width: 160,
       render: (v: string) => <Tag color="blue">{v}</Tag>,
+    },
+    {
+      title: 'Теги',
+      key: 'lead_tags',
+      width: 200,
+      render: (_: unknown, record: Lead) => renderTagChips(record.tag_names, leadTagsCatalog?.results, record.tags) || '—',
     },
     {
       title: 'Стадия',
@@ -222,7 +372,7 @@ export default function CampaignDetailPage() {
         <Tag color={orgStatusColors[s]}>{record.status_display}</Tag>
       ),
     },
-    { title: 'Потребность', dataIndex: 'demand_count', key: 'demand', align: 'center' as const },
+    { title: 'Списочная (факт)', dataIndex: 'demand_count', key: 'demand', align: 'center' as const },
     { title: 'Менеджер', dataIndex: 'manager_name', key: 'manager', render: (v: string | null) => v || '—' },
   ];
 
@@ -232,6 +382,14 @@ export default function CampaignDetailPage() {
       label: leadsTabLabel,
       children: (
         <div>
+          <Space style={{ marginBottom: 12 }} wrap>
+            <Button onClick={downloadLeadDemandTemplate}>
+              Скачать шаблон импорта потребности
+            </Button>
+            <Button onClick={() => setLeadDemandImportOpen(true)}>
+              Импорт потребности по лидам
+            </Button>
+          </Space>
           <Space wrap align="center" style={{ marginBottom: 12 }}>
             <Tooltip title="Не менее столько дней с последнего взаимодействия. Лиды без касаний тоже учитываются.">
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -257,16 +415,30 @@ export default function CampaignDetailPage() {
                 />
               </span>
             </Tooltip>
-            {(touchMinDays !== undefined || touchMaxDays !== undefined) && (
+            <Tooltip title="Лид попадает в список, если у него или у его организации есть хотя бы один из выбранных тегов">
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>Теги</Typography.Text>
+                <EntityTagSelect
+                  availableTags={leadOrgTagCatalogMerged}
+                  value={leadOrgTagFilter}
+                  onChange={(v) => setLeadOrgTagFilter(v)}
+                  placeholder="Фильтр"
+                  style={{ minWidth: 220 }}
+                  allowClear
+                />
+              </span>
+            </Tooltip>
+            {(touchMinDays !== undefined || touchMaxDays !== undefined || leadOrgTagFilter.length > 0) && (
               <Button
                 size="small"
                 type="link"
                 onClick={() => {
                   setTouchMinDays(undefined);
                   setTouchMaxDays(undefined);
+                  setLeadOrgTagFilter([]);
                 }}
               >
-                Сбросить
+                Сбросить фильтры
               </Button>
             )}
           </Space>
@@ -285,7 +457,7 @@ export default function CampaignDetailPage() {
             <LeadBoardView campaign={campaignForLeadsView} />
           ) : leadsView === 'table' ? (
             <Table
-              dataSource={leadsAfterTouchFilter}
+              dataSource={leadsAfterFilters}
               columns={leadColumns}
               rowKey="id"
               size="small"
@@ -382,6 +554,9 @@ export default function CampaignDetailPage() {
             </Typography.Title>
             <Space wrap>
               <Tag color={statusColors[campaign.status]}>{campaign.status_display}</Tag>
+              {campaign.operational_stage_display && (
+                <Tag color="blue">{campaign.operational_stage_display}</Tag>
+              )}
               <Select
                 value={campaign.status}
                 onChange={handleStatusChange}
@@ -399,13 +574,23 @@ export default function CampaignDetailPage() {
               ))}
             </Space>
           </div>
-          <Button
-            type="primary"
-            icon={<EditOutlined />}
-            onClick={() => navigate(`/campaigns/${id}/edit`)}
-          >
-            Редактировать
-          </Button>
+          <Space>
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              loading={deleteCampaign.isPending}
+              onClick={handleDeleteCampaign}
+            >
+              Удалить
+            </Button>
+            <Button
+              type="primary"
+              icon={<EditOutlined />}
+              onClick={() => navigate(`/campaigns/${id}/edit`)}
+            >
+              Редактировать
+            </Button>
+          </Space>
         </div>
 
         <Row gutter={16} style={{ marginTop: 16 }}>
@@ -419,7 +604,7 @@ export default function CampaignDetailPage() {
             <Statistic title="Программ" value={campaign.campaign_programs.length} />
           </Col>
           <Col span={4}>
-            <Statistic title="Регионов" value={campaign.campaign_regions.length} />
+            <Statistic title="Регионов" value={distinctCampaignRegionsCount} />
           </Col>
           <Col span={4}>
             <Statistic title="Менеджеров" value={uniqueManagers.length} />
@@ -437,7 +622,15 @@ export default function CampaignDetailPage() {
 
         <Descriptions column={2} style={{ marginTop: 16 }} size="small">
           <Descriptions.Item label="Федеральный оператор">
-            {campaign.federal_operator_name || '—'}
+            {campaign.federal_operator_short_name?.trim()
+              || campaign.federal_operator_name
+              || '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Проект">
+            {campaign.project_name || '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Наша организация">
+            {campaign.acting_organization_name || '—'}
           </Descriptions.Item>
           <Descriptions.Item label="Создал">
             {campaign.created_by_name || '—'}
@@ -485,6 +678,45 @@ export default function CampaignDetailPage() {
         subtitle={orgContactPreview?.funnelName ? `Воронка: ${orgContactPreview.funnelName}` : null}
         leadLink={orgContactPreview && id ? { campaignId: id, leadId: orgContactPreview.leadId } : null}
       />
+
+      <Modal
+        title="Импорт потребности по лидам"
+        open={leadDemandImportOpen}
+        onCancel={() => {
+          if (leadDemandImportBusy) return;
+          setLeadDemandImportOpen(false);
+          setLeadDemandImportFiles([]);
+        }}
+        onOk={submitLeadDemandImport}
+        okText="Импортировать"
+        confirmLoading={leadDemandImportBusy}
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Upload
+            maxCount={1}
+            accept=".xlsx"
+            fileList={leadDemandImportFiles}
+            beforeUpload={(file) => {
+              setLeadDemandImportFiles([
+                {
+                  uid: `${Date.now()}-${file.name}`,
+                  name: file.name,
+                  status: 'done',
+                  originFileObj: file,
+                },
+              ]);
+              return false;
+            }}
+            onRemove={() => setLeadDemandImportFiles([])}
+          >
+            <Button>Выбрать файл</Button>
+          </Upload>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Используйте шаблон из этой кампании: он содержит список лидов, текущие значения, этап и отдельные колонки
+            по всем пунктам чек-листа (информативно). Для импорта обновляются: План, Заявленная и Списочная (факт).
+          </Typography.Text>
+        </Space>
+      </Modal>
     </div>
   );
 }

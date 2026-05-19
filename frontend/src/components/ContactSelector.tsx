@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
-import { Select, Button, Modal, Form, Input, Radio, Switch, Space, Typography, Tag, Divider } from 'antd';
+import { Select, Button, Modal, Form, Input, Radio, Switch, Space, Typography, Tag, Divider, message } from 'antd';
 import { PlusOutlined, UserOutlined, PhoneOutlined, MailOutlined } from '@ant-design/icons';
 import { useContactsByOrganization, useCreateContact } from '../api/hooks';
 import type { Contact } from '../types';
+import { formatPhoneWithExtension } from '../utils/formatPhoneWithExtension';
 
 interface Props {
   organizationId: number | null;
@@ -72,7 +73,7 @@ export default function ContactSelector({
         onContactDetails({
           contact_person: c.full_name,
           contact_position: c.position,
-          contact_phone: c.phone,
+          contact_phone: formatPhoneWithExtension(c.phone, c.phone_extension),
           contact_email: c.email,
           contact_messenger: c.messenger,
         });
@@ -90,6 +91,10 @@ export default function ContactSelector({
   };
 
   const handleCreateContact = async () => {
+    if (organizationId == null) {
+      message.warning('У лида не задана организация — нельзя создать контакт');
+      return;
+    }
     try {
       const values = await form.validateFields();
       const data = {
@@ -100,6 +105,7 @@ export default function ContactSelector({
         middle_name: values.middle_name || '',
         position: values.position || '',
         phone: values.phone || '',
+        phone_extension: values.phone_extension || '',
         email: values.email || '',
         messenger: values.messenger || '',
         is_manager: values.is_manager || false,
@@ -114,7 +120,7 @@ export default function ContactSelector({
         onContactDetails({
           contact_person: `${created.last_name} ${created.first_name} ${created.middle_name}`.trim(),
           contact_position: created.position,
-          contact_phone: created.phone,
+          contact_phone: formatPhoneWithExtension(created.phone, created.phone_extension),
           contact_email: created.email,
           contact_messenger: created.messenger,
         });
@@ -152,6 +158,7 @@ export default function ContactSelector({
                   type="link"
                   icon={<PlusOutlined />}
                   size="small"
+                  disabled={organizationId == null}
                   onClick={() => {
                     form.setFieldValue('type', 'person');
                     setModalOpen(true);
@@ -204,9 +211,12 @@ export default function ContactSelector({
               <Form.Item name="position" label="Должность">
                 <Input placeholder="Начальник отдела" />
               </Form.Item>
-              <Space style={{ width: '100%' }}>
+              <Space style={{ width: '100%' }} wrap>
                 <Form.Item name="phone" label="Телефон">
                   <Input prefix={<PhoneOutlined />} placeholder="+7..." />
+                </Form.Item>
+                <Form.Item name="phone_extension" label="Добавочный">
+                  <Input placeholder="1234" />
                 </Form.Item>
                 <Form.Item name="email" label="Email">
                   <Input prefix={<MailOutlined />} placeholder="email@example.com" />
