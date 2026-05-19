@@ -10,6 +10,9 @@ class Campaign(models.Model):
         PAUSED = "paused", "Приостановлена"
         COMPLETED = "completed", "Завершена"
 
+    class OperationalStage(models.TextChoices):
+        ORGANIZATION_LIST = "organization_list", "Формирование перечня организаций"
+
     name = models.CharField(max_length=500, verbose_name="Название кампании")
     status = models.CharField(
         max_length=20,
@@ -17,13 +20,43 @@ class Campaign(models.Model):
         default=Status.DRAFT,
         verbose_name="Статус",
     )
+    operational_stage = models.CharField(
+        max_length=40,
+        choices=OperationalStage.choices,
+        blank=True,
+        default="",
+        verbose_name="Стадия кампании",
+        help_text="Операционная стадия жизненного цикла кампании (отдельно от статуса и стадий воронки лидов)",
+    )
     federal_operator = models.ForeignKey(
-        "reference.FederalOperator",
+        "organizations.Organization",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name="campaigns",
         verbose_name="Федеральный оператор",
+    )
+    federal_operators = models.ManyToManyField(
+        "organizations.Organization",
+        blank=True,
+        related_name="campaigns_as_federal_operator",
+        verbose_name="Федеральные операторы",
+    )
+    project = models.ForeignKey(
+        "organizations.Project",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="campaigns",
+        verbose_name="Проект",
+    )
+    acting_organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="acting_campaigns",
+        verbose_name="От нашей организации",
     )
     funnels = models.ManyToManyField(
         "funnels.Funnel",
@@ -37,6 +70,18 @@ class Campaign(models.Model):
     )
     hypothesis_result = models.TextField(
         blank=True, verbose_name="Результат проверки гипотезы"
+    )
+    collect_search_task = models.TextField(
+        blank=True,
+        default="",
+        verbose_name="Задание на поиск",
+        help_text="Краткий бриф по типу организаций и контактов для стадии сбора лидов",
+    )
+    tags = models.ManyToManyField(
+        "organizations.OrganizationTag",
+        blank=True,
+        related_name="campaigns",
+        verbose_name="Теги",
     )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -212,6 +257,23 @@ class CampaignRegion(models.Model):
         related_name="managed_campaign_regions",
         verbose_name="Ответственный менеджер",
     )
+    primary_contact_specialist = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="specialist_campaign_regions",
+        verbose_name="Специалист по первичному контакту",
+    )
+    demand_quota = models.PositiveIntegerField(
+        default=0,
+        verbose_name="Квота региона (чел.)",
+    )
+    search_task = models.TextField(
+        blank=True,
+        default="",
+        verbose_name="Задание на поиск в регионе",
+    )
 
     class Meta:
         verbose_name = "Регион в кампании"
@@ -271,6 +333,14 @@ class CampaignOrganization(models.Model):
 
 
 class Lead(models.Model):
+    class PrimaryContactStatus(models.TextChoices):
+        NEW = "new", "Новый"
+        EMAIL_PREPARED = "email_prepared", "Письмо подготовлено"
+        EMAIL_SENT = "email_sent", "Письмо отправлено"
+        RESPONSE_RECEIVED = "response_received", "Ответ получен"
+        RESULT_RECORDED = "result_recorded", "Результат зафиксирован"
+        REJECTED = "rejected", "Отказ"
+
     campaign = models.ForeignKey(
         Campaign,
         on_delete=models.CASCADE,
@@ -282,6 +352,14 @@ class Lead(models.Model):
         on_delete=models.CASCADE,
         related_name="leads",
         verbose_name="Организация",
+    )
+    region = models.ForeignKey(
+        "reference.Region",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="leads",
+        verbose_name="Регион лида",
     )
     funnel = models.ForeignKey(
         "funnels.Funnel",
@@ -313,6 +391,25 @@ class Lead(models.Model):
         related_name="managed_leads",
         verbose_name="Ответственный менеджер",
     )
+    primary_contact_specialist = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="specialist_leads",
+        verbose_name="Специалист по первичному контакту",
+    )
+    primary_contact_status = models.CharField(
+        max_length=30,
+        choices=PrimaryContactStatus.choices,
+        default=PrimaryContactStatus.NEW,
+        verbose_name="Статус первичного контакта",
+    )
+    primary_contact_result = models.TextField(
+        blank=True,
+        default="",
+        verbose_name="Результат первичного контакта",
+    )
     forecast_demand = models.IntegerField(
         null=True, blank=True, verbose_name="Прогноз потребности (чел.)"
     )
@@ -340,13 +437,19 @@ class Lead(models.Model):
         related_name="primary_for_leads",
         verbose_name="Основной контакт",
     )
+    tags = models.ManyToManyField(
+        "organizations.OrganizationTag",
+        blank=True,
+        related_name="leads",
+        verbose_name="Теги",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         verbose_name = "Лид"
         verbose_name_plural = "Лиды"
-        unique_together = ["campaign", "organization", "funnel"]
+        unique_together = ["campaign", "organization", "funnel", "region"]
         ordering = ["-created_at"]
         constraints = [
             models.UniqueConstraint(
@@ -357,6 +460,8 @@ class Lead(models.Model):
         ]
 
     def __str__(self):
+        if self.region_id:
+            return f"{self.organization} ({self.region}) [{self.funnel}]"
         return f"{self.organization} [{self.funnel}]"
 
     def get_stage_deadline(self, stage):
@@ -371,6 +476,221 @@ class Lead(models.Model):
             return None
         from apps.campaigns.utils import add_business_days
         return add_business_days(self.queue.start_date, days)
+
+
+class CampaignSubfunnel(models.Model):
+    campaign = models.ForeignKey(
+        Campaign,
+        on_delete=models.CASCADE,
+        related_name="subfunnels",
+        verbose_name="Кампания",
+    )
+    funnel = models.ForeignKey(
+        "funnels.Funnel",
+        on_delete=models.CASCADE,
+        related_name="campaign_subfunnels",
+        verbose_name="Основная воронка",
+    )
+    template = models.ForeignKey(
+        "funnels.SubfunnelTemplate",
+        on_delete=models.CASCADE,
+        related_name="campaign_subfunnels",
+        verbose_name="Шаблон подворонки",
+    )
+    binding = models.ForeignKey(
+        "funnels.SubfunnelTemplateBinding",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="campaign_subfunnels",
+        verbose_name="Привязка шаблона",
+    )
+    role = models.ForeignKey(
+        "accounts.RoleDefinition",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="campaign_subfunnels",
+        verbose_name="Роль",
+    )
+    default_assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="campaign_subfunnels_default_assignee",
+        verbose_name="Исполнитель по умолчанию",
+    )
+    template_version = models.PositiveIntegerField(default=1, verbose_name="Версия шаблона")
+    is_active = models.BooleanField(default=True, verbose_name="Активна")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Подворонка кампании"
+        verbose_name_plural = "Подворонки кампаний"
+        ordering = ["campaign_id", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["campaign", "template", "binding"],
+                name="unique_campaign_subfunnel_template_binding",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.campaign.name} → {self.template.name}"
+
+
+class LeadSubfunnel(models.Model):
+    class Status(models.TextChoices):
+        TODO = "todo", "К выполнению"
+        IN_PROGRESS = "in_progress", "В работе"
+        BLOCKED = "blocked", "Блокировано"
+        DONE = "done", "Готово"
+
+    campaign_subfunnel = models.ForeignKey(
+        CampaignSubfunnel,
+        on_delete=models.CASCADE,
+        related_name="lead_subfunnels",
+        verbose_name="Подворонка кампании",
+    )
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="subfunnels",
+        verbose_name="Лид",
+    )
+    campaign_region = models.ForeignKey(
+        CampaignRegion,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="region_tasks",
+        verbose_name="Регион кампании",
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=Status.choices,
+        default=Status.TODO,
+        verbose_name="Статус",
+    )
+    current_template_stage = models.ForeignKey(
+        "funnels.TaskTemplateStage",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="lead_subfunnels",
+        verbose_name="Текущий этап шаблона задачи",
+    )
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="lead_subfunnels_assignee",
+        verbose_name="Исполнитель",
+    )
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name="Старт")
+    due_at = models.DateTimeField(null=True, blank=True, verbose_name="Дедлайн")
+    completed_at = models.DateTimeField(null=True, blank=True, verbose_name="Завершено")
+    is_available = models.BooleanField(
+        default=True,
+        verbose_name="Доступна на текущей стадии",
+        help_text="Для диапазонных подворонок availability вычисляется по стадии лида.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Подворонка лида"
+        verbose_name_plural = "Подворонки лидов"
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["campaign_subfunnel", "lead"],
+                condition=models.Q(lead__isnull=False),
+                name="unique_lead_subfunnel_per_campaign_subfunnel",
+            ),
+            models.UniqueConstraint(
+                fields=["campaign_subfunnel", "campaign_region"],
+                condition=models.Q(campaign_region__isnull=False),
+                name="unique_region_subfunnel_per_campaign_subfunnel",
+            ),
+            models.CheckConstraint(
+                check=(
+                    models.Q(lead__isnull=False, campaign_region__isnull=True)
+                    | models.Q(lead__isnull=True, campaign_region__isnull=False)
+                ),
+                name="lead_subfunnel_lead_xor_campaign_region",
+            ),
+        ]
+
+    def __str__(self):
+        if self.campaign_region_id:
+            return f"{self.campaign_region} — {self.campaign_subfunnel.template.name}"
+        return f"{self.lead} — {self.campaign_subfunnel.template.name}"
+
+    @staticmethod
+    def status_from_stage(stage):
+        if not stage:
+            return LeadSubfunnel.Status.TODO
+        if stage.is_terminal:
+            return LeadSubfunnel.Status.DONE
+        if stage.order <= 0:
+            return LeadSubfunnel.Status.TODO
+        return LeadSubfunnel.Status.IN_PROGRESS
+
+
+class LeadSubfunnelChecklistValue(models.Model):
+    lead_subfunnel = models.ForeignKey(
+        LeadSubfunnel,
+        on_delete=models.CASCADE,
+        related_name="checklist_values",
+        verbose_name="Подворонка лида",
+    )
+    template_item = models.ForeignKey(
+        "funnels.SubfunnelTemplateItem",
+        on_delete=models.CASCADE,
+        related_name="lead_values",
+        verbose_name="Пункт шаблона",
+    )
+    is_completed = models.BooleanField(default=False, verbose_name="Выполнен")
+    text_value = models.TextField(blank=True, default="", verbose_name="Комментарий")
+    completed_at = models.DateTimeField(null=True, blank=True, verbose_name="Когда выполнен")
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="completed_lead_subfunnel_values",
+        verbose_name="Кем выполнен",
+    )
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_lead_subfunnel_values",
+        verbose_name="Исполнитель пункта",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Значение чек-листа подворонки"
+        verbose_name_plural = "Значения чек-листа подворонки"
+        ordering = ["template_item__order", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["lead_subfunnel", "template_item"],
+                name="unique_lead_subfunnel_template_item_value",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.lead_subfunnel} — {self.template_item.title}"
 
 
 class LeadChecklistValue(models.Model):
@@ -414,6 +734,14 @@ class LeadChecklistValue(models.Model):
         null=True,
         blank=True,
         verbose_name="Выполнил",
+    )
+    primary_contact_specialist = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="specialist_checklist_values",
+        verbose_name="Ответственный специалист",
     )
 
     class Meta:

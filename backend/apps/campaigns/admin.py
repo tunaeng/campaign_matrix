@@ -4,6 +4,7 @@ from .models import (
     CampaignRegion, CampaignOrganization,
     CampaignFunnel, QueueStageDeadline,
     Lead, LeadChecklistValue, LeadInteraction,
+    CampaignSubfunnel, LeadSubfunnel, LeadSubfunnelChecklistValue,
 )
 
 
@@ -35,16 +36,16 @@ class CampaignFunnelInline(admin.TabularInline):
 class LeadInline(admin.TabularInline):
     model = Lead
     extra = 0
-    fields = ["organization", "funnel", "queue", "current_stage", "manager", "primary_contact"]
+    fields = ["organization", "region", "funnel", "queue", "current_stage", "manager", "primary_contact"]
 
 
 @admin.register(Campaign)
 class CampaignAdmin(admin.ModelAdmin):
     list_display = [
-        "name", "status", "federal_operator",
+        "name", "status", "project", "federal_operator", "acting_organization",
         "created_by", "created_at",
     ]
-    list_filter = ["status", "federal_operator"]
+    list_filter = ["status", "project", "federal_operator", "acting_organization"]
     search_fields = ["name"]
     inlines = [
         CampaignFunnelInline, QueueInline, ProgramInline,
@@ -73,8 +74,33 @@ class LeadInteractionInline(admin.TabularInline):
     extra = 0
 
 
+class CampaignSubfunnelInline(admin.TabularInline):
+    model = CampaignSubfunnel
+    extra = 0
+
+
 @admin.register(Lead)
 class LeadAdmin(admin.ModelAdmin):
-    list_display = ["organization", "campaign", "funnel", "current_stage", "manager", "primary_contact"]
+    list_display = ["organization", "region", "campaign", "funnel", "current_stage", "manager", "primary_contact"]
     list_filter = ["campaign", "funnel"]
     inlines = [LeadChecklistValueInline, LeadInteractionInline]
+
+
+@admin.register(CampaignSubfunnel)
+class CampaignSubfunnelAdmin(admin.ModelAdmin):
+    list_display = ["campaign", "template", "funnel", "role", "default_assignee", "is_active"]
+    list_filter = ["is_active", "funnel", "role"]
+    search_fields = ["campaign__name", "template__name"]
+
+
+@admin.register(LeadSubfunnel)
+class LeadSubfunnelAdmin(admin.ModelAdmin):
+    list_display = ["lead", "campaign_subfunnel", "status", "assignee", "is_available", "due_at"]
+    list_filter = ["status", "is_available"]
+    search_fields = ["lead__organization__name", "campaign_subfunnel__template__name"]
+
+
+@admin.register(LeadSubfunnelChecklistValue)
+class LeadSubfunnelChecklistValueAdmin(admin.ModelAdmin):
+    list_display = ["lead_subfunnel", "template_item", "is_completed", "assignee", "completed_at"]
+    list_filter = ["is_completed"]

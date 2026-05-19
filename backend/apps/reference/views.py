@@ -9,15 +9,18 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.http import HttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Count, Q
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from .models import (
     FederalDistrict, Region, Profession, ProfessionDemandStatus,
-    ProfessionApprovalStatus, Program, FederalOperator, Contract,
+    ProfessionApprovalStatus, Program, Contract,
     ContractProgram, Quota, DemandImport, DemandImportSnapshot,
 )
+from apps.organizations.models import Organization, ProjectOrganizationMembershipRole
+
 from .serializers import (
     FederalDistrictSerializer, FederalDistrictWithRegionsSerializer,
     RegionSerializer, ProfessionSerializer,
@@ -130,10 +133,19 @@ class ProgramViewSet(viewsets.ModelViewSet):
 
 
 class FederalOperatorViewSet(viewsets.ModelViewSet):
-    queryset = FederalOperator.objects.all()
+    queryset = Organization.objects.all()
     serializer_class = FederalOperatorSerializer
-    search_fields = ["name"]
+    search_fields = ["name", "short_name", "inn"]
     pagination_class = LargePagination
+
+    def get_queryset(self):
+        qs = Organization.objects.filter(
+            project_memberships__role=ProjectOrganizationMembershipRole.FEDERAL_OPERATOR
+        )
+        project_id = self.request.query_params.get("project")
+        if project_id and str(project_id).isdigit():
+            qs = qs.filter(project_memberships__project_id=int(project_id))
+        return qs.distinct()
 
 
 class ContractViewSet(viewsets.ModelViewSet):
@@ -154,6 +166,36 @@ class QuotaViewSet(viewsets.ModelViewSet):
     )
     serializer_class = QuotaSerializer
     filterset_fields = ["federal_operator", "program", "region", "year"]
+
+
+class DemandMatrixImportTemplateView(APIView):
+    """
+    Downloadable XLSX template for demand matrix import.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        regions = list(Region.objects.order_by("name").values_list("name", flat=True))
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Матрица"
+        ws.append(["Профессия", *regions])
+        ws.append(["Пример профессии", *([0] * len(regions))])
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        resp = HttpResponse(
+            buf.read(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = (
+            'attachment; filename="demand_matrix_import_template_wide.xlsx"'
+        )
+        return resp
 
 
 class DemandMatrixImportView(APIView):
@@ -586,8 +628,8 @@ class DemandMatrixImportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            federal_operator = FederalOperator.objects.get(pk=int(federal_operator_id))
-        except (ValueError, FederalOperator.DoesNotExist):
+            federal_operator = Organization.objects.get(pk=int(federal_operator_id))
+        except (ValueError, Organization.DoesNotExist):
             return Response(
                 {"detail": "Invalid federal_operator_id."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -953,8 +995,8 @@ class DemandMatrixImportPreviewView(DemandMatrixImportView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            federal_operator = FederalOperator.objects.get(pk=int(federal_operator_id))
-        except (ValueError, FederalOperator.DoesNotExist):
+            federal_operator = Organization.objects.get(pk=int(federal_operator_id))
+        except (ValueError, Organization.DoesNotExist):
             return Response(
                 {"detail": "Invalid federal_operator_id."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1374,8 +1416,8 @@ class DemandMatrixImportApplyView(DemandMatrixImportView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            federal_operator = FederalOperator.objects.get(pk=int(federal_operator_id))
-        except (ValueError, FederalOperator.DoesNotExist):
+            federal_operator = Organization.objects.get(pk=int(federal_operator_id))
+        except (ValueError, Organization.DoesNotExist):
             return Response(
                 {"detail": "Invalid federal_operator_id."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1452,6 +1494,7 @@ class DemandMatrixView(generics.ListAPIView):
         year = int(request.query_params.get("year", 2026))
         profession_ids = request.query_params.get("profession_ids")
         region_ids = request.query_params.get("region_ids")
+        federal_operator_ids = request.query_params.get("federal_operator_ids")
         demanded_only = request.query_params.get("demanded_only", "").lower() == "true"
         approval_statuses = request.query_params.get("approval_statuses")
 
@@ -1480,10 +1523,18 @@ class DemandMatrixView(generics.ListAPIView):
         if profession_ids:
             ids = [int(x) for x in profession_ids.split(",")]
             statuses = statuses.filter(profession_id__in=ids)
+        if federal_operator_ids:
+            ids = [int(x) for x in federal_operator_ids.split(",")]
+            statuses = statuses.filter(federal_operator_id__in=ids)
 
-        # All operators for "missing in" labels
+        # Operators participating in matrix slice (not all organizations).
+        operator_ids = list(
+            statuses.values_list("federal_operator_id", flat=True).distinct()
+        )
         operators = list(
-            FederalOperator.objects.values("id", "short_name", "name").order_by("name")
+            Organization.objects.filter(id__in=operator_ids)
+            .values("id", "short_name", "name")
+            .order_by("name")
         )
         operator_display = {
             o["id"]: (o["short_name"] or o["name"]).strip() or o["name"]
@@ -1538,7 +1589,7 @@ class DemandMatrixView(generics.ListAPIView):
                 )
                 # Send "missing in operators" only for partial mismatch:
                 # at least one operator has demand, but not all.
-                if val and len(demanded_ops) < operator_count:
+                if operator_count > 0 and val and len(demanded_ops) < operator_count:
                     missing = [
                         {"id": op_id, "short_name": operator_display[op_id]}
                         for op_id in operator_ids

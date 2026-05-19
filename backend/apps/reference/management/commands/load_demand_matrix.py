@@ -1,6 +1,7 @@
 import csv
 from django.core.management.base import BaseCommand
-from apps.reference.models import Profession, Region, ProfessionDemandStatus, FederalOperator
+from apps.organizations.models import Organization
+from apps.reference.models import Profession, Region, ProfessionDemandStatus
 
 
 class Command(BaseCommand):
@@ -31,14 +32,14 @@ class Command(BaseCommand):
         year = options["year"]
         fo_id = options["federal_operator"]
         if fo_id is not None:
-            federal_operator = FederalOperator.objects.get(pk=fo_id)
+            federal_operator = Organization.objects.get(pk=fo_id)
         else:
-            federal_operator = FederalOperator.objects.order_by("id").first()
+            federal_operator = Organization.objects.order_by("id").first()
             if not federal_operator:
-                self.stdout.write(self.style.ERROR("No FederalOperator in DB. Create one first."))
+                self.stdout.write(self.style.ERROR("No Organization in DB. Create one first."))
                 return
         self.stdout.write(
-            f"Loading demand matrix from {filepath} for year {year}, operator {federal_operator.display_name}"
+            f"Loading demand matrix from {filepath} for year {year}, operator {federal_operator.name}"
         )
 
         region_map = {}

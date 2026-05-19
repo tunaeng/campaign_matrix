@@ -227,10 +227,14 @@ BITRIX_API_BASE_URL = os.environ.get(
     "BITRIX_API_BASE_URL",
     "https://bitrix24.tuna-edu.ru",
 )
-BITRIX_API_TOKEN = os.environ.get(
-    "BITRIX_API_TOKEN",
-    "74e00a3fa74ba59cde6f1317fed8145d6f350d53",
-)
+BITRIX_API_TOKEN = os.environ.get("BITRIX_API_TOKEN", "")
+BITRIX_CLIENT_ID = os.environ.get("BITRIX_CLIENT_ID", "")
+BITRIX_CLIENT_SECRET = os.environ.get("BITRIX_CLIENT_SECRET", "")
+BITRIX_REDIRECT_URI = os.environ.get("BITRIX_REDIRECT_URI", "")
+BITRIX_OAUTH_TOKEN_URL = os.environ.get("BITRIX_OAUTH_TOKEN_URL", "")
+# Fallback ИНН, если Bitrix не отдаёт список «наших» по API (см. GET .../external-organizations/our-side/)
+BITRIX_OUR_ORGANIZATION_INN = os.environ.get("BITRIX_OUR_ORGANIZATION_INN", "")
+BITRIX_OUR_ORGANIZATION_INNS = os.environ.get("BITRIX_OUR_ORGANIZATION_INNS", "")
 
 # JWT
 SIMPLE_JWT = {

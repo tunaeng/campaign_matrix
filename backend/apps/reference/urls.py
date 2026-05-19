@@ -5,7 +5,7 @@ from .views import (
     ProgramViewSet, FederalOperatorViewSet, ContractViewSet,
     ContractProgramViewSet, QuotaViewSet, DemandMatrixView,
     DemandMatrixImportView, DemandMatrixImportPreviewView,
-    DemandMatrixImportApplyView,
+    DemandMatrixImportApplyView, DemandMatrixImportTemplateView,
 )
 
 router = DefaultRouter()
@@ -21,6 +21,7 @@ router.register("quotas", QuotaViewSet)
 urlpatterns = [
     path("demand-matrix/", DemandMatrixView.as_view(), name="demand_matrix"),
     path("demand-matrix/import/", DemandMatrixImportView.as_view(), name="demand_matrix_import"),
+    path("demand-matrix/import/template/", DemandMatrixImportTemplateView.as_view(), name="demand_matrix_import_template"),
     path("demand-matrix/import/preview/", DemandMatrixImportPreviewView.as_view(), name="demand_matrix_import_preview"),
     path("demand-matrix/import/apply/", DemandMatrixImportApplyView.as_view(), name="demand_matrix_import_apply"),
     path("", include(router.urls)),

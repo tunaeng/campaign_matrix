@@ -2,7 +2,16 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import Funnel, FunnelStage, StageChecklistItem, ChecklistItemOption
+from .models import (
+    Funnel,
+    FunnelStage,
+    StageChecklistItem,
+    ChecklistItemOption,
+    SubfunnelTemplate,
+    TaskTemplateStage,
+    SubfunnelTemplateItem,
+    SubfunnelTemplateBinding,
+)
 from .serializers import (
     FunnelListSerializer,
     FunnelDetailSerializer,
@@ -10,6 +19,10 @@ from .serializers import (
     FunnelStageSerializer,
     StageChecklistItemSerializer,
     ChecklistItemOptionSerializer,
+    SubfunnelTemplateSerializer,
+    TaskTemplateStageSerializer,
+    SubfunnelTemplateItemSerializer,
+    SubfunnelTemplateBindingSerializer,
 )
 
 
@@ -18,9 +31,16 @@ class FunnelViewSet(viewsets.ModelViewSet):
     search_fields = ["name"]
 
     def get_queryset(self):
-        return Funnel.objects.prefetch_related(
-            "stages__checklist_items__options"
+        qs = Funnel.objects.prefetch_related(
+            "stages__checklist_items__options",
+            "tags",
         )
+        tag_ids = self.request.query_params.get("tags")
+        if tag_ids:
+            ids = [int(x) for x in tag_ids.split(",") if x.strip().isdigit()]
+            if ids:
+                qs = qs.filter(tags__id__in=ids).distinct()
+        return qs
 
     def get_serializer_class(self):
         if self.action == "list":
@@ -38,6 +58,22 @@ class FunnelViewSet(viewsets.ModelViewSet):
             return Response(serializer.data)
 
         serializer = FunnelStageSerializer(data={**request.data, "funnel": funnel.pk})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get", "post"], url_path="subfunnel-bindings")
+    def subfunnel_bindings(self, request, pk=None):
+        funnel = self.get_object()
+        if request.method == "GET":
+            bindings = funnel.subfunnel_bindings.select_related(
+                "template", "role", "default_specialist"
+            )
+            serializer = SubfunnelTemplateBindingSerializer(bindings, many=True)
+            return Response(serializer.data)
+        serializer = SubfunnelTemplateBindingSerializer(
+            data={**request.data, "funnel": funnel.pk}
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -99,3 +135,73 @@ class ChecklistItemOptionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return ChecklistItemOption.objects.select_related("checklist_item")
+
+
+class SubfunnelTemplateViewSet(viewsets.ModelViewSet):
+    serializer_class = SubfunnelTemplateSerializer
+    filterset_fields = ["is_active", "owner_role"]
+    search_fields = ["name", "slug"]
+
+    def get_queryset(self):
+        return SubfunnelTemplate.objects.select_related("owner_role").prefetch_related("items", "stages")
+
+    @action(detail=True, methods=["get", "post"], url_path="stages")
+    def stages(self, request, pk=None):
+        template = self.get_object()
+        if request.method == "GET":
+            stages = template.stages.order_by("order", "id")
+            serializer = TaskTemplateStageSerializer(stages, many=True)
+            return Response(serializer.data)
+        serializer = TaskTemplateStageSerializer(data={**request.data, "template": template.pk})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get", "post"], url_path="items")
+    def items(self, request, pk=None):
+        template = self.get_object()
+        if request.method == "GET":
+            items = template.items.select_related("default_role", "default_specialist")
+            serializer = SubfunnelTemplateItemSerializer(items, many=True)
+            return Response(serializer.data)
+        serializer = SubfunnelTemplateItemSerializer(
+            data={**request.data, "template": template.pk}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class SubfunnelTemplateItemViewSet(viewsets.ModelViewSet):
+    serializer_class = SubfunnelTemplateItemSerializer
+    filterset_fields = ["template"]
+
+    def get_queryset(self):
+        return SubfunnelTemplateItem.objects.select_related(
+            "template", "stage", "default_role", "default_specialist"
+        )
+
+
+class TaskTemplateStageViewSet(viewsets.ModelViewSet):
+    serializer_class = TaskTemplateStageSerializer
+    filterset_fields = ["template", "is_terminal"]
+
+    def get_queryset(self):
+        return TaskTemplateStage.objects.select_related("template").order_by("order", "id")
+
+
+class SubfunnelTemplateBindingViewSet(viewsets.ModelViewSet):
+    serializer_class = SubfunnelTemplateBindingSerializer
+    filterset_fields = ["funnel", "template", "binding_type", "is_active"]
+
+    def get_queryset(self):
+        return SubfunnelTemplateBinding.objects.select_related(
+            "funnel",
+            "template",
+            "role",
+            "default_specialist",
+            "target_stage",
+            "target_checklist_item",
+            "from_stage",
+            "to_stage",
+        )

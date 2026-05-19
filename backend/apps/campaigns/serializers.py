@@ -1,15 +1,19 @@
 import os
+import random
 
 from django.db import transaction
 from django.db.models import Sum
+from django.db.models.functions import Coalesce
 from django.db.utils import OperationalError, ProgrammingError
 from rest_framework import serializers
-from apps.organizations.models import Contact
+from apps.organizations.models import Contact, OrganizationTag
+from apps.funnels.models import TaskTemplateStage
 from .models import (
     Campaign, CampaignQueue, CampaignProgram,
     CampaignRegion, CampaignOrganization,
     CampaignFunnel, QueueStageDeadline,
     Lead, LeadChecklistValue, LeadChecklistAttachment, LeadInteraction,
+    CampaignSubfunnel, LeadSubfunnel, LeadSubfunnelChecklistValue,
 )
 from apps.accounts.serializers import UserShortSerializer
 
@@ -106,6 +110,7 @@ class CampaignRegionSerializer(serializers.ModelSerializer):
     )
     queue_name = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
+    primary_contact_specialist_name = serializers.SerializerMethodField()
 
     class Meta:
         model = CampaignRegion
@@ -113,6 +118,8 @@ class CampaignRegionSerializer(serializers.ModelSerializer):
             "id", "campaign", "region", "region_name",
             "federal_district_name", "queue", "queue_name",
             "manager", "manager_name",
+            "primary_contact_specialist", "primary_contact_specialist_name",
+            "demand_quota", "search_task",
         ]
         read_only_fields = ["id"]
 
@@ -124,6 +131,11 @@ class CampaignRegionSerializer(serializers.ModelSerializer):
     def get_manager_name(self, obj):
         if obj.manager:
             return str(obj.manager)
+        return None
+
+    def get_primary_contact_specialist_name(self, obj):
+        if obj.primary_contact_specialist:
+            return str(obj.primary_contact_specialist)
         return None
 
 
@@ -142,6 +154,7 @@ class CampaignOrganizationSerializer(serializers.ModelSerializer):
     )
     manager_name = serializers.SerializerMethodField()
     primary_contact_preview = serializers.SerializerMethodField()
+    organization_tags = serializers.SerializerMethodField()
 
     class Meta:
         model = CampaignOrganization
@@ -150,8 +163,12 @@ class CampaignOrganizationSerializer(serializers.ModelSerializer):
             "organization_region", "organization_type",
             "status", "status_display", "manager", "manager_name",
             "demand_count", "notes", "primary_contact_preview",
+            "organization_tags",
         ]
         read_only_fields = ["id"]
+
+    def get_organization_tags(self, obj):
+        return [t.pk for t in obj.organization.tags.all()]
 
     def get_manager_name(self, obj):
         if obj.manager:
@@ -219,6 +236,15 @@ class LeadChecklistValueSerializer(serializers.ModelSerializer):
     contact_full_name = serializers.CharField(
         source="contact.full_name", read_only=True, default=None
     )
+    primary_contact_specialist_name = serializers.SerializerMethodField()
+    communication_step = serializers.CharField(
+        source="checklist_item.communication_step", read_only=True, default=""
+    )
+    communication_step_display = serializers.CharField(
+        source="checklist_item.get_communication_step_display",
+        read_only=True,
+        default="",
+    )
 
     class Meta:
         model = LeadChecklistValue
@@ -229,9 +255,16 @@ class LeadChecklistValueSerializer(serializers.ModelSerializer):
             "contact", "contact_full_name",
             "contact_name", "contact_position", "contact_phone",
             "contact_email", "contact_messenger",
+            "primary_contact_specialist", "primary_contact_specialist_name",
+            "communication_step", "communication_step_display",
             "completed_at", "completed_by",
         ]
         read_only_fields = ["id", "completed_at", "completed_by"]
+
+    def get_primary_contact_specialist_name(self, obj):
+        if obj.primary_contact_specialist:
+            return str(obj.primary_contact_specialist)
+        return None
 
     def get_confirmation_types(self, obj):
         return list(obj.checklist_item.confirmation_types or [])
@@ -323,9 +356,8 @@ class LeadListSerializer(serializers.ModelSerializer):
     organization_name = serializers.CharField(
         source="organization.name", read_only=True
     )
-    organization_region = serializers.CharField(
-        source="organization.region.name", read_only=True, default=None
-    )
+    organization_region = serializers.SerializerMethodField()
+    region_name = serializers.CharField(source="region.name", read_only=True, default=None)
     funnel_name = serializers.CharField(
         source="funnel.name", read_only=True
     )
@@ -337,27 +369,53 @@ class LeadListSerializer(serializers.ModelSerializer):
     )
     queue_name = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
+    primary_contact_specialist_name = serializers.SerializerMethodField()
     checklist_progress = serializers.SerializerMethodField()
     checklist_summary = serializers.SerializerMethodField()
+    tasks_summary = serializers.SerializerMethodField()
     last_interaction = serializers.SerializerMethodField()
     primary_contact = serializers.SerializerMethodField()
+    tags = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=OrganizationTag.objects.all(), required=False,
+    )
+    tag_names = serializers.SerializerMethodField()
+    organization_tags = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
         fields = [
             "id", "campaign", "organization", "organization_name",
-            "organization_region", "funnel", "funnel_name",
+            "region", "region_name", "organization_region",
+            "funnel", "funnel_name",
             "queue", "queue_name",
             "current_stage", "current_stage_name", "current_stage_is_rejection",
             "manager", "manager_name",
+            "primary_contact_specialist", "primary_contact_specialist_name",
+            "primary_contact_status", "primary_contact_result",
             "forecast_demand", "demand_count",
             "demand_collected_declared", "demand_collected_list",
             "demand_quota_declared", "demand_quota_list",
             "notes",
-            "checklist_progress", "checklist_summary", "last_interaction",
+            "tags", "tag_names", "organization_tags",
+            "checklist_progress", "checklist_summary", "tasks_summary", "last_interaction",
             "primary_contact",
             "created_at", "updated_at",
         ]
+
+    def get_tag_names(self, obj):
+        return list(obj.tags.order_by("name").values_list("name", flat=True))
+
+    def get_organization_tags(self, obj):
+        if not obj.organization_id:
+            return []
+        return [t.pk for t in obj.organization.tags.all()]
+
+    def get_organization_region(self, obj):
+        if obj.region_id and obj.region:
+            return obj.region.name
+        if obj.organization and obj.organization.region:
+            return obj.organization.region.name
+        return None
 
     def get_queue_name(self, obj):
         if obj.queue:
@@ -367,6 +425,11 @@ class LeadListSerializer(serializers.ModelSerializer):
     def get_manager_name(self, obj):
         if obj.manager:
             return str(obj.manager)
+        return None
+
+    def get_primary_contact_specialist_name(self, obj):
+        if obj.primary_contact_specialist:
+            return str(obj.primary_contact_specialist)
         return None
 
     def get_checklist_progress(self, obj):
@@ -394,6 +457,28 @@ class LeadListSerializer(serializers.ModelSerializer):
             for item in items
         ]
 
+    def get_tasks_summary(self, obj):
+        rows = obj.subfunnels.select_related(
+            "campaign_subfunnel__template",
+            "current_template_stage",
+        ).prefetch_related("checklist_values")
+        result = []
+        for row in rows:
+            if not row.is_available:
+                continue
+            values = list(row.checklist_values.all())
+            total = len(values)
+            completed = sum(1 for v in values if v.is_completed)
+            result.append({
+                "id": row.id,
+                "template_name": row.campaign_subfunnel.template.name,
+                "stage_name": row.current_template_stage.name if row.current_template_stage else None,
+                "status": row.status,
+                "done": completed == total and total > 0,
+                "progress": {"total": total, "completed": completed},
+            })
+        return result
+
     def get_last_interaction(self, obj):
         interaction = obj.interactions.order_by("-date").first()
         if not interaction:
@@ -418,10 +503,11 @@ class LeadDetailSerializer(LeadListSerializer):
     checklist_values = LeadChecklistValueSerializer(many=True, read_only=True)
     interactions = LeadInteractionSerializer(many=True, read_only=True)
     stage_deadlines = serializers.SerializerMethodField()
+    subfunnels = serializers.SerializerMethodField()
 
     class Meta(LeadListSerializer.Meta):
         fields = LeadListSerializer.Meta.fields + [
-            "checklist_values", "interactions", "stage_deadlines",
+            "checklist_values", "interactions", "stage_deadlines", "subfunnels",
         ]
 
     def to_representation(self, instance):
@@ -436,6 +522,16 @@ class LeadDetailSerializer(LeadListSerializer):
         if lead and value.organization_id != lead.organization_id:
             raise serializers.ValidationError(
                 "Контакт должен принадлежать организации лида"
+            )
+        return value
+
+    def validate_current_stage(self, value):
+        if value is None:
+            return None
+        lead = self.instance
+        if lead and value.funnel_id != lead.funnel_id:
+            raise serializers.ValidationError(
+                "Стадия не принадлежит воронке лида"
             )
         return value
 
@@ -463,8 +559,179 @@ class LeadDetailSerializer(LeadListSerializer):
                 "deadline_days": stage.deadline_days,
                 "deadline_date": deadline_date.isoformat() if deadline_date else None,
                 "is_rejection": stage.is_rejection,
+                "is_collect_stage": stage.is_collect_stage,
             })
         return result
+
+    def get_subfunnels(self, obj):
+        data = obj.subfunnels.select_related(
+            "campaign_subfunnel__template",
+            "campaign_subfunnel__role",
+            "assignee",
+        ).prefetch_related("checklist_values__template_item", "checklist_values__assignee")
+        return LeadSubfunnelSerializer(data, many=True).data
+
+
+class LeadSubfunnelChecklistValueSerializer(serializers.ModelSerializer):
+    template_item_title = serializers.CharField(source="template_item.title", read_only=True)
+    template_item_order = serializers.IntegerField(source="template_item.order", read_only=True)
+    template_item_stage_id = serializers.IntegerField(source="template_item.stage_id", read_only=True)
+    template_item_stage_name = serializers.CharField(source="template_item.stage.name", read_only=True)
+    assignee_name = serializers.SerializerMethodField()
+    completed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LeadSubfunnelChecklistValue
+        fields = [
+            "id",
+            "lead_subfunnel",
+            "template_item",
+            "template_item_title",
+            "template_item_order",
+            "template_item_stage_id",
+            "template_item_stage_name",
+            "is_completed",
+            "text_value",
+            "assignee",
+            "assignee_name",
+            "completed_at",
+            "completed_by",
+            "completed_by_name",
+        ]
+        read_only_fields = ["id", "completed_at", "completed_by"]
+
+    def get_assignee_name(self, obj):
+        return str(obj.assignee) if obj.assignee else None
+
+    def get_completed_by_name(self, obj):
+        return str(obj.completed_by) if obj.completed_by else None
+
+
+class LeadSubfunnelSerializer(serializers.ModelSerializer):
+    template_id = serializers.IntegerField(source="campaign_subfunnel.template_id", read_only=True)
+    template_name = serializers.CharField(source="campaign_subfunnel.template.name", read_only=True)
+    role_id = serializers.IntegerField(source="campaign_subfunnel.role_id", read_only=True)
+    role_name = serializers.CharField(source="campaign_subfunnel.role.name", read_only=True)
+    region_id = serializers.SerializerMethodField()
+    region_name = serializers.SerializerMethodField()
+    is_region_task = serializers.SerializerMethodField()
+    display_name = serializers.SerializerMethodField()
+    assignee_name = serializers.SerializerMethodField()
+    current_template_stage_name = serializers.CharField(source="current_template_stage.name", read_only=True)
+    current_template_stage_order = serializers.IntegerField(source="current_template_stage.order", read_only=True)
+    can_advance_stage = serializers.SerializerMethodField()
+    can_retreat_stage = serializers.SerializerMethodField()
+    checklist_values = LeadSubfunnelChecklistValueSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = LeadSubfunnel
+        fields = [
+            "id",
+            "lead",
+            "campaign_subfunnel",
+            "campaign_region",
+            "campaign_region_id",
+            "region_id",
+            "region_name",
+            "is_region_task",
+            "display_name",
+            "template_id",
+            "template_name",
+            "role_id",
+            "role_name",
+            "status",
+            "current_template_stage",
+            "current_template_stage_name",
+            "current_template_stage_order",
+            "can_advance_stage",
+            "can_retreat_stage",
+            "assignee",
+            "assignee_name",
+            "started_at",
+            "due_at",
+            "completed_at",
+            "is_available",
+            "checklist_values",
+        ]
+
+    def get_assignee_name(self, obj):
+        return str(obj.assignee) if obj.assignee else None
+
+    def get_region_id(self, obj):
+        if obj.campaign_region_id and obj.campaign_region:
+            return obj.campaign_region.region_id
+        return None
+
+    def get_region_name(self, obj):
+        if obj.campaign_region_id and obj.campaign_region:
+            return obj.campaign_region.region.name
+        return None
+
+    def get_is_region_task(self, obj):
+        return bool(obj.campaign_region_id)
+
+    def get_display_name(self, obj):
+        if obj.campaign_region_id and obj.campaign_region:
+            return f"Регион: {obj.campaign_region.region.name}"
+        if obj.lead and obj.lead.organization:
+            return obj.lead.organization.name
+        return None
+
+    def _ordered_stage_ids(self, obj):
+        return list(
+            TaskTemplateStage.objects.filter(template_id=obj.campaign_subfunnel.template_id)
+            .order_by("order", "id")
+            .values_list("id", flat=True)
+        )
+
+    def get_can_advance_stage(self, obj):
+        if not obj.current_template_stage_id:
+            return False
+        stage_ids = self._ordered_stage_ids(obj)
+        if not stage_ids:
+            return False
+        idx = stage_ids.index(obj.current_template_stage_id) if obj.current_template_stage_id in stage_ids else -1
+        return idx >= 0 and idx < len(stage_ids) - 1
+
+    def get_can_retreat_stage(self, obj):
+        if not obj.current_template_stage_id:
+            return False
+        stage_ids = self._ordered_stage_ids(obj)
+        if not stage_ids:
+            return False
+        idx = stage_ids.index(obj.current_template_stage_id) if obj.current_template_stage_id in stage_ids else -1
+        return idx > 0
+
+
+class CampaignSubfunnelSerializer(serializers.ModelSerializer):
+    template_name = serializers.CharField(source="template.name", read_only=True)
+    role_name = serializers.CharField(source="role.name", read_only=True)
+    default_assignee_name = serializers.SerializerMethodField()
+    lead_subfunnels_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = CampaignSubfunnel
+        fields = [
+            "id",
+            "campaign",
+            "funnel",
+            "template",
+            "template_name",
+            "binding",
+            "role",
+            "role_name",
+            "default_assignee",
+            "default_assignee_name",
+            "template_version",
+            "is_active",
+            "lead_subfunnels_count",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at", "template_version"]
+
+    def get_default_assignee_name(self, obj):
+        return str(obj.default_assignee) if obj.default_assignee else None
 
 
 # Campaign serializers
@@ -531,8 +798,18 @@ class CampaignListSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(
         source="get_status_display", read_only=True
     )
+    operational_stage_display = serializers.CharField(
+        source="get_operational_stage_display", read_only=True
+    )
     federal_operator_name = serializers.CharField(
-        source="federal_operator.display_name", read_only=True, default=None
+        source="federal_operator.name", read_only=True, default=None
+    )
+    federal_operator_short_name = serializers.SerializerMethodField()
+    federal_operators = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    federal_operator_names = serializers.SerializerMethodField()
+    project_name = serializers.CharField(source="project.name", read_only=True, default=None)
+    acting_organization_name = serializers.CharField(
+        source="acting_organization.name", read_only=True, default=None
     )
     created_by_name = serializers.SerializerMethodField()
     total_demand = serializers.IntegerField(read_only=True)
@@ -545,19 +822,42 @@ class CampaignListSerializer(serializers.ModelSerializer):
     queue_period_end = serializers.SerializerMethodField()
     queue_periods = serializers.SerializerMethodField()
     demand_summary = serializers.SerializerMethodField()
+    tags = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=OrganizationTag.objects.all(), required=False,
+    )
+    tag_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Campaign
         fields = [
             "id", "name", "status", "status_display",
+            "operational_stage", "operational_stage_display",
             "federal_operator", "federal_operator_name",
+            "federal_operator_short_name",
+            "federal_operators", "federal_operator_names",
+            "project", "project_name", "acting_organization", "acting_organization_name",
+            "collect_search_task",
             "created_by", "created_by_name",
             "total_demand", "organizations_count", "leads_count",
             "programs_count", "regions_count", "funnel_names",
             "queue_period_start", "queue_period_end", "queue_periods",
             "demand_summary",
+            "tags", "tag_names",
             "created_at", "updated_at",
         ]
+
+    def get_tag_names(self, obj):
+        return list(obj.tags.order_by("name").values_list("name", flat=True))
+
+    def get_federal_operator_short_name(self, obj):
+        fo = obj.federal_operator
+        if not fo:
+            return None
+        s = (fo.short_name or "").strip()
+        return s or None
+
+    def get_federal_operator_names(self, obj):
+        return list(obj.federal_operators.values_list("name", flat=True))
 
     def get_created_by_name(self, obj):
         return str(obj.created_by) if obj.created_by else None
@@ -612,8 +912,9 @@ class CampaignListSerializer(serializers.ModelSerializer):
     def get_regions_count(self, obj):
         return (
             obj.leads
-            .exclude(organization__region__isnull=True)
-            .values("organization__region")
+            .annotate(_region=Coalesce("region_id", "organization__region_id"))
+            .exclude(_region__isnull=True)
+            .values("_region")
             .distinct()
             .count()
         )
@@ -629,8 +930,18 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(
         source="get_status_display", read_only=True
     )
+    operational_stage_display = serializers.CharField(
+        source="get_operational_stage_display", read_only=True
+    )
     federal_operator_name = serializers.CharField(
-        source="federal_operator.display_name", read_only=True, default=None
+        source="federal_operator.name", read_only=True, default=None
+    )
+    federal_operator_short_name = serializers.SerializerMethodField()
+    federal_operators = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    federal_operator_names = serializers.SerializerMethodField()
+    project_name = serializers.CharField(source="project.name", read_only=True, default=None)
+    acting_organization_name = serializers.CharField(
+        source="acting_organization.name", read_only=True, default=None
     )
     created_by_name = serializers.SerializerMethodField()
     queues = CampaignQueueSerializer(many=True, read_only=True)
@@ -639,25 +950,49 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
     campaign_regions = CampaignRegionSerializer(many=True, read_only=True)
     organizations = CampaignOrganizationSerializer(many=True, read_only=True)
     leads = LeadListSerializer(many=True, read_only=True)
+    subfunnels = CampaignSubfunnelSerializer(many=True, read_only=True)
     total_demand = serializers.IntegerField(read_only=True)
     organizations_count = serializers.IntegerField(read_only=True)
     leads_count = serializers.IntegerField(read_only=True)
     demand_summary = serializers.SerializerMethodField()
+    tags = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=OrganizationTag.objects.all(), required=False,
+    )
+    tag_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Campaign
         fields = [
             "id", "name", "status", "status_display",
+            "operational_stage", "operational_stage_display",
             "federal_operator", "federal_operator_name",
+            "federal_operator_short_name",
+            "federal_operators", "federal_operator_names",
+            "project", "project_name", "acting_organization", "acting_organization_name",
+            "collect_search_task",
             "hypothesis", "hypothesis_result",
             "created_by", "created_by_name",
             "queues", "campaign_funnels",
             "campaign_programs", "campaign_regions",
-            "organizations", "leads",
+            "organizations", "leads", "subfunnels",
             "total_demand", "organizations_count", "leads_count",
             "demand_summary",
+            "tags", "tag_names",
             "created_at", "updated_at",
         ]
+
+    def get_tag_names(self, obj):
+        return list(obj.tags.order_by("name").values_list("name", flat=True))
+
+    def get_federal_operator_short_name(self, obj):
+        fo = obj.federal_operator
+        if not fo:
+            return None
+        s = (fo.short_name or "").strip()
+        return s or None
+
+    def get_federal_operator_names(self, obj):
+        return list(obj.federal_operators.values_list("name", flat=True))
 
     def get_created_by_name(self, obj):
         return str(obj.created_by) if obj.created_by else None
@@ -699,6 +1034,12 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
     manager_assignments = serializers.ListField(
         child=serializers.DictField(), required=False, write_only=True
     )
+    campaign_subfunnel_data = serializers.ListField(
+        child=serializers.DictField(), required=False, write_only=True
+    )
+    federal_operator_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, write_only=True
+    )
     # Явная цель с фронта — делим на бэкенде; иначе старый баг (полная цель в каждом лиде).
     forecast_demand_mode = serializers.ChoiceField(
         choices=["total", "per_queue", "per_org"],
@@ -719,10 +1060,14 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Campaign
         fields = [
-            "id", "name", "status", "federal_operator",
+            "id", "name", "status", "federal_operator", "project", "acting_organization",
+            "collect_search_task",
             "hypothesis", "hypothesis_result",
+            "tags",
+            "federal_operator_ids",
             "queues", "funnel_ids", "program_ids", "region_data",
             "organization_ids", "lead_data", "manager_assignments",
+            "campaign_subfunnel_data",
             "forecast_demand_mode", "forecast_total_goal", "forecast_queue_goals",
         ]
         read_only_fields = ["id"]
@@ -770,11 +1115,14 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
         program_ids = validated_data.pop("program_ids", [])
         region_data = validated_data.pop("region_data", [])
         organization_ids = validated_data.pop("organization_ids", [])
+        tag_ids = validated_data.pop("tags", [])
         forecast_demand_mode = validated_data.pop("forecast_demand_mode", None)
         forecast_total_goal = validated_data.pop("forecast_total_goal", None)
         forecast_queue_goals = validated_data.pop("forecast_queue_goals", None)
         lead_data = validated_data.pop("lead_data", [])
         manager_assignments = validated_data.pop("manager_assignments", [])
+        campaign_subfunnel_data = validated_data.pop("campaign_subfunnel_data", [])
+        federal_operator_ids = validated_data.pop("federal_operator_ids", None)
         self._split_forecast_across_leads(
             lead_data,
             forecast_demand_mode,
@@ -784,6 +1132,23 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
 
         validated_data["created_by"] = self.context["request"].user
         campaign = Campaign.objects.create(**validated_data)
+        if federal_operator_ids is None:
+            if campaign.federal_operator_id:
+                federal_operator_ids = [campaign.federal_operator_id]
+            else:
+                federal_operator_ids = []
+        if federal_operator_ids:
+            campaign.federal_operators.set(federal_operator_ids)
+            if not campaign.federal_operator_id:
+                campaign.federal_operator_id = federal_operator_ids[0]
+                campaign.save(update_fields=["federal_operator"])
+        else:
+            campaign.federal_operators.clear()
+            if campaign.federal_operator_id is not None:
+                campaign.federal_operator_id = None
+                campaign.save(update_fields=["federal_operator"])
+        if tag_ids:
+            campaign.tags.set(tag_ids)
 
         for fid in funnel_ids:
             CampaignFunnel.objects.create(campaign=campaign, funnel_id=fid)
@@ -812,6 +1177,9 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
                 region_id=rd["region_id"],
                 queue=queue,
                 manager_id=rd.get("manager_id"),
+                primary_contact_specialist_id=rd.get("specialist_id"),
+                demand_quota=rd.get("demand_quota") or 0,
+                search_task=rd.get("search_task") or "",
             )
 
         for oid in organization_ids:
@@ -824,12 +1192,25 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
             q_num = ld.get("queue_number", 1)
             queue = queue_map.get(q_num, first_queue)
             funnel_id = ld.get("funnel_id")
+            org_id = ld.get("organization_id")
+            if not org_id or not funnel_id:
+                continue
+            region_id = ld.get("region_id")
+            if region_id is None and org_id:
+                from apps.organizations.models import Organization as OrgModel
+                region_id = (
+                    OrgModel.objects.filter(id=org_id)
+                    .values_list("region_id", flat=True)
+                    .first()
+                )
             Lead.objects.create(
                 campaign=campaign,
-                organization_id=ld["organization_id"],
+                organization_id=org_id,
                 funnel_id=funnel_id,
+                region_id=region_id,
                 queue=queue,
                 manager_id=ld.get("manager_id"),
+                primary_contact_specialist_id=ld.get("specialist_id"),
                 forecast_demand=ld.get("forecast_demand"),
             )
 
@@ -853,7 +1234,23 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
                 Lead.objects.filter(
                     campaign=campaign, id=target_id
                 ).update(manager_id=manager_id)
+            elif level == "region_specialist":
+                CampaignRegion.objects.filter(
+                    campaign=campaign, region_id=target_id
+                ).update(primary_contact_specialist_id=manager_id)
+            elif level == "lead_specialist":
+                Lead.objects.filter(
+                    campaign=campaign, id=target_id
+                ).update(primary_contact_specialist_id=manager_id)
 
+        if not campaign_subfunnel_data:
+            campaign_subfunnel_data = self._build_default_campaign_subfunnels(funnel_ids)
+        self._upsert_campaign_subfunnels(campaign, campaign_subfunnel_data)
+        from .collect_tasks import activate_collect_campaign_workflow, deactivate_collect_campaign_workflow
+        if campaign.status == Campaign.Status.ACTIVE:
+            activate_collect_campaign_workflow(campaign)
+        else:
+            deactivate_collect_campaign_workflow(campaign)
         return campaign
 
     def update(self, instance, validated_data):
@@ -864,12 +1261,23 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
         organization_ids = validated_data.pop("organization_ids", None)
         lead_data = validated_data.pop("lead_data", None)
         manager_assignments = validated_data.pop("manager_assignments", None)
+        campaign_subfunnel_data = validated_data.pop("campaign_subfunnel_data", None)
+        federal_operator_ids = validated_data.pop("federal_operator_ids", None)
         forecast_demand_mode = validated_data.pop("forecast_demand_mode", None)
         forecast_total_goal = validated_data.pop("forecast_total_goal", None)
         forecast_queue_goals = validated_data.pop("forecast_queue_goals", None)
 
         old_status = instance.status
         instance = super().update(instance, validated_data)
+        if federal_operator_ids is not None:
+            instance.federal_operators.set(federal_operator_ids)
+            new_primary = federal_operator_ids[0] if federal_operator_ids else None
+            if instance.federal_operator_id != new_primary:
+                instance.federal_operator_id = new_primary
+                instance.save(update_fields=["federal_operator"])
+        elif instance.federal_operator_id:
+            # keep m2m in sync for legacy writes using single federal_operator
+            instance.federal_operators.set([instance.federal_operator_id])
 
         if funnel_ids is not None:
             instance.campaign_funnels.all().delete()
@@ -892,6 +1300,9 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
                     region_id=rd["region_id"],
                     queue=queue,
                     manager_id=rd.get("manager_id"),
+                    primary_contact_specialist_id=rd.get("specialist_id"),
+                    demand_quota=rd.get("demand_quota") or 0,
+                    search_task=rd.get("search_task") or "",
                 )
 
         if organization_ids is not None:
@@ -945,27 +1356,45 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
                     if org:
                         org_id = org.id
                     else:
+                        # Temporary generated INN for imported organizations without explicit INN.
+                        generated_inn = str(random.randint(10**11, 10**12 - 1))
+                        while OrgModel.objects.filter(inn=generated_inn).exists():
+                            generated_inn = str(random.randint(10**11, 10**12 - 1))
                         org = OrgModel.objects.create(
                             name=org_name,
                             short_name=org_name[:200],
+                            inn=generated_inn,
                         )
                         org_id = org.id
 
                 if not org_id:
                     continue
 
+                region_id = ld.get("region_id")
+                if region_id is None:
+                    region_id = (
+                        OrgModel.objects.filter(id=org_id)
+                        .values_list("region_id", flat=True)
+                        .first()
+                    )
+
                 resolved.append({
                     "organization_id": org_id,
                     "funnel_id": funnel_id,
+                    "region_id": region_id,
                     "queue": queue,
                     "manager_id": ld.get("manager_id"),
+                    "specialist_id": ld.get("specialist_id"),
                     "forecast_demand": ld.get("forecast_demand"),
                 })
 
-            incoming_keys = {(r["organization_id"], r["funnel_id"]) for r in resolved}
+            incoming_keys = {
+                (r["organization_id"], r["funnel_id"], r["region_id"])
+                for r in resolved
+            }
 
             for lead in list(instance.leads.all()):
-                if (lead.organization_id, lead.funnel_id) not in incoming_keys:
+                if (lead.organization_id, lead.funnel_id, lead.region_id) not in incoming_keys:
                     lead.delete()
 
             for r in resolved:
@@ -973,9 +1402,11 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
                     campaign=instance,
                     organization_id=r["organization_id"],
                     funnel_id=r["funnel_id"],
+                    region_id=r["region_id"],
                     defaults={
                         "queue": r["queue"],
                         "manager_id": r["manager_id"],
+                        "primary_contact_specialist_id": r["specialist_id"],
                         "forecast_demand": r["forecast_demand"],
                     },
                 )
@@ -996,6 +1427,23 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
                     Lead.objects.filter(
                         campaign=instance, id=target_id
                     ).update(manager_id=manager_id)
+                elif level == "region_specialist":
+                    CampaignRegion.objects.filter(
+                        campaign=instance, region_id=target_id
+                    ).update(primary_contact_specialist_id=manager_id)
+                elif level == "lead_specialist":
+                    Lead.objects.filter(
+                        campaign=instance, id=target_id
+                    ).update(primary_contact_specialist_id=manager_id)
+
+        if campaign_subfunnel_data is not None:
+            self._upsert_campaign_subfunnels(instance, campaign_subfunnel_data)
+
+        from .collect_tasks import activate_collect_campaign_workflow, deactivate_collect_campaign_workflow
+        if instance.status == Campaign.Status.ACTIVE:
+            activate_collect_campaign_workflow(instance)
+        else:
+            deactivate_collect_campaign_workflow(instance)
 
         if old_status != "active" and instance.status == "active":
             self._activate_leads(instance)
@@ -1003,21 +1451,154 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
         return instance
 
     @staticmethod
+    def _upsert_campaign_subfunnels(campaign, rows):
+        if rows is None:
+            return
+        if not rows:
+            campaign.subfunnels.all().delete()
+            return
+        keep_ids = []
+        for row in rows:
+            template_id = row.get("template_id") or row.get("template")
+            funnel_id = row.get("funnel_id") or row.get("funnel")
+            if not template_id or not funnel_id:
+                continue
+            defaults = {
+                "binding_id": row.get("binding_id") or row.get("binding"),
+                "role_id": row.get("role_id") or row.get("role"),
+                "default_assignee_id": row.get("default_assignee_id") or row.get("default_assignee"),
+                "is_active": row.get("is_active", True),
+            }
+            obj, _ = CampaignSubfunnel.objects.update_or_create(
+                campaign=campaign,
+                template_id=template_id,
+                binding_id=defaults["binding_id"],
+                defaults={
+                    "funnel_id": funnel_id,
+                    "role_id": defaults["role_id"],
+                    "default_assignee_id": defaults["default_assignee_id"],
+                    "is_active": defaults["is_active"],
+                },
+            )
+            keep_ids.append(obj.id)
+        if keep_ids:
+            campaign.subfunnels.exclude(id__in=keep_ids).delete()
+
+    @staticmethod
+    def _build_default_campaign_subfunnels(funnel_ids):
+        if not funnel_ids:
+            return []
+        from apps.funnels.models import SubfunnelTemplateBinding
+        rows = []
+        bindings = SubfunnelTemplateBinding.objects.filter(
+            funnel_id__in=funnel_ids,
+            is_active=True,
+            template__is_active=True,
+        ).select_related("template")
+        for binding in bindings:
+            rows.append(
+                {
+                    "funnel_id": binding.funnel_id,
+                    "template_id": binding.template_id,
+                    "binding_id": binding.id,
+                    "role_id": binding.role_id or binding.template.owner_role_id,
+                    "default_assignee_id": binding.default_specialist_id,
+                    "is_active": True,
+                }
+            )
+        return rows
+
+    @staticmethod
     def _activate_leads(campaign):
         """Set first non-rejection stage + create checklist values for all leads."""
-        from apps.funnels.models import FunnelStage
+        from .collect_tasks import get_entry_funnel_stage_for_lead
 
         for lead in campaign.leads.filter(current_stage__isnull=True).select_related("funnel"):
-            first_stage = (
-                FunnelStage.objects
-                .filter(funnel=lead.funnel, is_rejection=False)
-                .order_by("order")
-                .first()
-            )
+            first_stage = get_entry_funnel_stage_for_lead(lead.funnel)
             if first_stage:
                 lead.current_stage = first_stage
-                lead.save(update_fields=["current_stage", "updated_at"])
+                if first_stage.primary_contact_specialist_id and not lead.primary_contact_specialist_id:
+                    lead.primary_contact_specialist_id = first_stage.primary_contact_specialist_id
+                lead.save(
+                    update_fields=[
+                        "current_stage",
+                        "primary_contact_specialist",
+                        "updated_at",
+                    ]
+                )
                 for item in first_stage.checklist_items.all():
                     LeadChecklistValue.objects.get_or_create(
-                        lead=lead, checklist_item=item,
+                        lead=lead,
+                        checklist_item=item,
+                        defaults={
+                            "primary_contact_specialist_id": (
+                                item.primary_contact_specialist_id
+                                or lead.primary_contact_specialist_id
+                            )
+                        },
                     )
+            CampaignCreateSerializer._materialize_lead_subfunnels(lead)
+
+    @staticmethod
+    def _materialize_lead_subfunnels(lead):
+        subfunnels = lead.campaign.subfunnels.filter(is_active=True).select_related(
+            "template",
+            "binding",
+            "default_assignee",
+        ).prefetch_related("template__items")
+        for sub in subfunnels:
+            stages = list(CampaignCreateSerializer._ensure_default_template_stages(sub.template))
+            default_stage = stages[0] if stages else None
+            defaults = {
+                "assignee_id": sub.default_assignee_id,
+                "current_template_stage_id": default_stage.id if default_stage else None,
+                "status": LeadSubfunnel.status_from_stage(default_stage),
+                "is_available": True,
+            }
+            if sub.binding and sub.binding.binding_type == "stage_range_checklist":
+                defaults["is_available"] = bool(
+                    lead.current_stage_id
+                    and sub.binding.from_stage_id
+                    and sub.binding.to_stage_id
+                    and sub.binding.from_stage.order <= lead.current_stage.order <= sub.binding.to_stage.order
+                )
+            lead_sub, _ = LeadSubfunnel.objects.get_or_create(
+                campaign_subfunnel=sub,
+                lead=lead,
+                defaults=defaults,
+            )
+            if not lead_sub.current_template_stage_id and default_stage:
+                stage_for_status = CampaignCreateSerializer._stage_for_legacy_status(stages, lead_sub.status)
+                lead_sub.current_template_stage_id = stage_for_status.id
+                lead_sub.status = LeadSubfunnel.status_from_stage(stage_for_status)
+                lead_sub.save(update_fields=["current_template_stage", "status", "updated_at"])
+            for item in sub.template.items.all():
+                LeadSubfunnelChecklistValue.objects.get_or_create(
+                    lead_subfunnel=lead_sub,
+                    template_item=item,
+                    defaults={"assignee_id": item.default_specialist_id or lead_sub.assignee_id},
+                )
+
+    @staticmethod
+    def _ensure_default_template_stages(template):
+        qs = template.stages.order_by("order", "id")
+        if qs.exists():
+            return qs
+        TaskTemplateStage.objects.bulk_create(
+            [
+                TaskTemplateStage(template=template, name="К выполнению", order=0, is_terminal=False),
+                TaskTemplateStage(template=template, name="В работе", order=1, is_terminal=False),
+                TaskTemplateStage(template=template, name="Готово", order=2, is_terminal=True),
+            ]
+        )
+        return template.stages.order_by("order", "id")
+
+    @staticmethod
+    def _stage_for_legacy_status(stages, legacy_status):
+        if not stages:
+            return None
+        if legacy_status == LeadSubfunnel.Status.DONE:
+            return next((s for s in reversed(stages) if s.is_terminal), stages[-1])
+        if legacy_status == LeadSubfunnel.Status.IN_PROGRESS:
+            return stages[1] if len(stages) > 1 else stages[0]
+        return stages[0]

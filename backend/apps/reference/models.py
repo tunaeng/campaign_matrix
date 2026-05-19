@@ -51,7 +51,7 @@ class Profession(models.Model):
 
 class ProfessionDemandStatus(models.Model):
     federal_operator = models.ForeignKey(
-        "FederalOperator",
+        "organizations.Organization",
         on_delete=models.CASCADE,
         related_name="demand_statuses",
         verbose_name="Федеральный оператор",
@@ -116,7 +116,7 @@ class ProfessionDemandStatusHistory(models.Model):
         verbose_name="Запись востребованности",
     )
     federal_operator = models.ForeignKey(
-        "FederalOperator",
+        "organizations.Organization",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -159,7 +159,7 @@ class ProfessionDemandStatusHistory(models.Model):
 
 class DemandImport(models.Model):
     federal_operator = models.ForeignKey(
-        "FederalOperator",
+        "organizations.Organization",
         on_delete=models.CASCADE,
         related_name="demand_imports",
         verbose_name="Федеральный оператор",
@@ -315,7 +315,7 @@ class Contract(models.Model):
         COMPLETED = "completed", "Завершён"
 
     federal_operator = models.ForeignKey(
-        FederalOperator,
+        "organizations.Organization",
         on_delete=models.CASCADE,
         related_name="contracts",
         verbose_name="Федеральный оператор",
@@ -375,7 +375,7 @@ class ContractProgram(models.Model):
 
 class Quota(models.Model):
     federal_operator = models.ForeignKey(
-        FederalOperator,
+        "organizations.Organization",
         on_delete=models.CASCADE,
         related_name="quotas",
         verbose_name="Федеральный оператор",

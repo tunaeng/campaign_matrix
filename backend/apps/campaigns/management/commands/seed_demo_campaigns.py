@@ -6,6 +6,9 @@
   python manage.py seed_demo_campaigns
 
 Повторный запуск обновляет кампании с теми же названиями.
+
+Демо с нулевой стадией и региональными задачами «Формирование перечня организаций»:
+  python manage.py seed_demo_collect_campaign
 """
 
 from datetime import date, timedelta
@@ -21,11 +24,15 @@ from apps.campaigns.models import (
     CampaignQueue,
     CampaignRegion,
     Lead,
+    CampaignSubfunnel,
+    LeadSubfunnel,
+    LeadSubfunnelChecklistValue,
     QueueStageDeadline,
 )
 from apps.funnels.models import Funnel, FunnelStage
 from apps.organizations.models import Organization
-from apps.reference.models import FederalOperator, Profession, Program, Region
+from apps.reference.models import Profession, Program, Region
+from apps.accounts.models import RoleDefinition
 
 # Те же названия, что в seed_demo_organizations
 DEMO_ORG_NAMES = [
@@ -99,12 +106,13 @@ def _ensure_program():
 
 
 def _ensure_federal_operator():
-    fo = FederalOperator.objects.order_by("id").first()
+    fo = Organization.objects.order_by("id").first()
     if fo:
         return fo
-    return FederalOperator.objects.create(
+    return Organization.objects.create(
         name='ФО "Демо" (тест)',
         short_name="ДемоФО",
+        inn="700000000001",
     )
 
 
@@ -115,6 +123,44 @@ def _fill_queue_deadlines(queue, funnel):
             funnel_stage=stage,
             defaults={"deadline_days": 3 + min(stage.order * 2, 20)},
         )
+
+
+def _materialize_subfunnels_for_campaign(campaign):
+    specialist_role = RoleDefinition.objects.filter(code="primary_contact_specialist").first()
+    funnel = campaign.funnels.order_by("id").first()
+    if not funnel:
+        return 0
+    bindings = funnel.subfunnel_bindings.filter(is_active=True).select_related(
+        "template", "role", "default_specialist"
+    )
+    created = 0
+    for binding in bindings:
+        sub, was_created = CampaignSubfunnel.objects.update_or_create(
+            campaign=campaign,
+            template=binding.template,
+            binding=binding,
+            defaults={
+                "funnel": funnel,
+                "role": binding.role or specialist_role,
+                "default_assignee": binding.default_specialist,
+                "template_version": binding.template.version,
+                "is_active": True,
+            },
+        )
+        created += int(was_created)
+        for lead in campaign.leads.all():
+            lead_sub, _ = LeadSubfunnel.objects.get_or_create(
+                campaign_subfunnel=sub,
+                lead=lead,
+                defaults={"assignee": sub.default_assignee},
+            )
+            for item in sub.template.items.all():
+                LeadSubfunnelChecklistValue.objects.get_or_create(
+                    lead_subfunnel=lead_sub,
+                    template_item=item,
+                    defaults={"assignee": item.default_specialist or lead_sub.assignee},
+                )
+    return created
 
 
 class Command(BaseCommand):
@@ -222,6 +268,7 @@ class Command(BaseCommand):
                         "demand_collected_list": spec["forecast"] // 6,
                     },
                 )
+            _materialize_subfunnels_for_campaign(campaign)
 
         self.stdout.write(
             self.style.SUCCESS(
