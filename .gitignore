@@ -25,6 +25,7 @@ frontend/dist/
 frontend/dist-ssr/
 frontend/.vite/
 frontend/.cache/
+*.tsbuildinfo
 
 # Logs
 *.log
