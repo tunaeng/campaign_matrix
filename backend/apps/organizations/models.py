@@ -253,6 +253,102 @@ class EntityFieldChange(models.Model):
         return f"{target}: {self.field_name}"
 
 
+class ImportBatch(models.Model):
+    class EntityType(models.TextChoices):
+        ORGANIZATIONS = "organizations", "Организации"
+        CONTACTS = "contacts", "Контакты"
+
+    class Status(models.TextChoices):
+        COMPLETED = "completed", "Завершён"
+        ROLLED_BACK = "rolled_back", "Откат выполнен"
+
+    entity_type = models.CharField(
+        max_length=20,
+        choices=EntityType.choices,
+        verbose_name="Тип сущности",
+    )
+    file_name = models.CharField(max_length=255, verbose_name="Имя файла")
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="import_batches",
+        verbose_name="Загрузил",
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата загрузки")
+    created_count = models.PositiveIntegerField(default=0, verbose_name="Создано")
+    updated_count = models.PositiveIntegerField(default=0, verbose_name="Обновлено")
+    skipped_count = models.PositiveIntegerField(default=0, verbose_name="Пропущено")
+    total_rows = models.PositiveIntegerField(default=0, verbose_name="Строк в файле")
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.COMPLETED,
+        verbose_name="Статус",
+    )
+    rolled_back_at = models.DateTimeField(null=True, blank=True, verbose_name="Дата отката")
+    rolled_back_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="rolled_back_import_batches",
+        verbose_name="Откатил",
+    )
+
+    class Meta:
+        verbose_name = "Пакет импорта"
+        verbose_name_plural = "Пакеты импорта"
+        ordering = ["-uploaded_at", "-id"]
+
+    def __str__(self):
+        return f"{self.file_name} ({self.get_entity_type_display()})"
+
+
+class ImportBatchRecord(models.Model):
+    class Action(models.TextChoices):
+        CREATED = "created", "Создано"
+        UPDATED = "updated", "Обновлено"
+
+    batch = models.ForeignKey(
+        ImportBatch,
+        on_delete=models.CASCADE,
+        related_name="records",
+        verbose_name="Пакет импорта",
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="import_batch_records",
+        verbose_name="Организация",
+    )
+    contact = models.ForeignKey(
+        Contact,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="import_batch_records",
+        verbose_name="Контакт",
+    )
+    action = models.CharField(max_length=20, choices=Action.choices, verbose_name="Действие")
+    snapshot = models.JSONField(default=dict, blank=True, verbose_name="Снимок до изменения")
+
+    class Meta:
+        verbose_name = "Запись пакета импорта"
+        verbose_name_plural = "Записи пакетов импорта"
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["batch", "action"]),
+        ]
+
+    def __str__(self):
+        target = self.organization_id or self.contact_id or "?"
+        return f"{self.get_action_display()} #{target}"
+
+
 class OrganizationInteraction(models.Model):
     class InteractionType(models.TextChoices):
         EMAIL = "email", "Email"

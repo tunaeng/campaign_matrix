@@ -11,6 +11,7 @@ from .models import (
     OrganizationInteraction,
     Contact,
     EntityFieldChange,
+    ImportBatch,
     OrganizationTag,
     Project,
     ProjectOrganizationMembership,
@@ -249,6 +250,40 @@ class EntityFieldChangeSerializer(serializers.ModelSerializer):
             "changed_at",
         ]
         read_only_fields = fields
+
+
+class ImportBatchSerializer(serializers.ModelSerializer):
+    uploaded_by_name = serializers.CharField(source="uploaded_by.__str__", read_only=True, default=None)
+    entity_type_display = serializers.CharField(source="get_entity_type_display", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    can_rollback = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ImportBatch
+        fields = [
+            "id",
+            "entity_type",
+            "entity_type_display",
+            "file_name",
+            "uploaded_by",
+            "uploaded_by_name",
+            "uploaded_at",
+            "created_count",
+            "updated_count",
+            "skipped_count",
+            "total_rows",
+            "status",
+            "status_display",
+            "rolled_back_at",
+            "can_rollback",
+        ]
+        read_only_fields = fields
+
+    def get_can_rollback(self, obj):
+        return (
+            obj.status == ImportBatch.Status.COMPLETED
+            and (obj.created_count > 0 or obj.updated_count > 0)
+        )
 
 
 class OrganizationShortSerializer(serializers.ModelSerializer):

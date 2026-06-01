@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     OrganizationViewSet, OrganizationInteractionViewSet, ContactViewSet,
     OrganizationTagViewSet, ProjectViewSet, ProjectOrganizationMembershipViewSet,
-    UserActingOrganizationViewSet,
+    UserActingOrganizationViewSet, ImportBatchViewSet,
     external_organizations, external_organizations_our_side, external_fed_districts,
     external_regions, external_org_types, external_prof_activities,
     sync_external_organizations,
@@ -19,6 +19,7 @@ router = DefaultRouter()
 router.register("organizations", OrganizationViewSet, basename="organization")
 router.register("interactions", OrganizationInteractionViewSet, basename="interaction")
 router.register("contacts", ContactViewSet, basename="contact")
+router.register("import-batches", ImportBatchViewSet, basename="import-batch")
 router.register("organization-tags", OrganizationTagViewSet, basename="organization-tag")
 router.register("projects", ProjectViewSet, basename="project")
 router.register("project-memberships", ProjectOrganizationMembershipViewSet, basename="project-membership")

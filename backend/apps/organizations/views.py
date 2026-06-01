@@ -10,11 +10,12 @@ from django.conf import settings
 from django.http import HttpResponse
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import Exists, OuterRef, ProtectedError
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from django.db.models import Exists, OuterRef
+from rest_framework.pagination import PageNumberPagination
 from django.utils import timezone
 from django.utils.text import slugify
 from apps.reference.models import Region
@@ -23,6 +24,8 @@ from .models import (
     OrganizationInteraction,
     Contact,
     EntityFieldChange,
+    ImportBatch,
+    ImportBatchRecord,
     OrganizationTag,
     Project,
     ProjectOrganizationMembership,
@@ -33,6 +36,7 @@ from .serializers import (
     OrganizationSerializer, OrganizationShortSerializer,
     OrganizationInteractionSerializer, ContactSerializer,
     EntityFieldChangeSerializer,
+    ImportBatchSerializer,
     OrganizationTagSerializer,
     ProjectSerializer,
     ProjectOrganizationMembershipSerializer,
@@ -60,6 +64,13 @@ BITRIX_COMMUNICATION_ADD_ENDPOINTS = ("/api/communication/add/", "/contacts/api/
 BITRIX_COMMUNICATION_UPDATE_ENDPOINTS = ("/api/communication/update/", "/contacts/api/communication/update/")
 
 _CHANGE_SOURCE_VALUES = {item.value for item in EntityFieldChange.Source}
+
+
+class RegistryPagination(PageNumberPagination):
+    page_size = 50
+    max_page_size = 500
+    page_size_query_param = "page_size"
+
 
 _CONTACT_AUDIT_FIELDS = (
     "organization",
@@ -590,6 +601,143 @@ def _find_organization_by_ref(org_ref):
     return org, "name", ref
 
 
+def _find_organization_for_import(row, org_raw):
+    """Поиск организации при импорте: сначала ИНН из колонки, затем org_raw как ИНН/точное имя."""
+    inn_from_col = _normalize_inn(row.get("inn"))
+    if inn_from_col:
+        org = Organization.objects.filter(inn=inn_from_col).first()
+        if org:
+            return org, "inn", inn_from_col
+
+    ref = _normalize_cell(org_raw)
+    if not ref:
+        return None, "", ""
+
+    inn = _normalize_inn(ref)
+    if inn:
+        org = Organization.objects.filter(inn=inn).first()
+        if org:
+            return org, "inn", inn
+
+    org = Organization.objects.filter(name__iexact=ref).first()
+    if org:
+        return org, "name", ref
+    org = Organization.objects.filter(short_name__iexact=ref).first()
+    if org:
+        return org, "name", ref
+    return None, "", ""
+
+
+def _restore_organization_state(organization: Organization, snapshot: dict):
+    organization.name = snapshot.get("name") or organization.name
+    organization.short_name = snapshot.get("short_name") or ""
+    inn_val = snapshot.get("inn") or ""
+    organization.inn = inn_val or None
+    organization.org_type = snapshot.get("org_type") or organization.org_type
+    organization.region_id = snapshot.get("region")
+    organization.parent_organization_id = snapshot.get("parent_organization")
+    organization.contact_person = snapshot.get("contact_person") or ""
+    organization.contact_email = snapshot.get("contact_email") or ""
+    organization.contact_phone = snapshot.get("contact_phone") or ""
+    organization.contact_phone_extension = snapshot.get("contact_phone_extension") or ""
+    organization.is_our_side = bool(snapshot.get("is_our_side"))
+    organization.description = snapshot.get("description") or ""
+    organization.save()
+    tag_ids = snapshot.get("tags") or []
+    organization.tags.set(tag_ids)
+
+
+def _restore_contact_state(contact: Contact, snapshot: dict):
+    contact.organization_id = snapshot.get("organization") or contact.organization_id
+    contact.type = snapshot.get("type") or contact.type
+    contact.comment = snapshot.get("comment") or ""
+    contact.current = bool(snapshot.get("current", True))
+    contact.first_name = snapshot.get("first_name") or ""
+    contact.last_name = snapshot.get("last_name") or ""
+    contact.middle_name = snapshot.get("middle_name") or ""
+    contact.position = snapshot.get("position") or ""
+    contact.phone = snapshot.get("phone") or ""
+    contact.phone_extension = snapshot.get("phone_extension") or ""
+    contact.email = snapshot.get("email") or ""
+    contact.is_manager = bool(snapshot.get("is_manager"))
+    contact.department_name = snapshot.get("department_name") or ""
+    contact.messenger = snapshot.get("messenger") or ""
+    contact.save()
+    tag_ids = snapshot.get("tags") or []
+    contact.tags.set(tag_ids)
+
+
+def _track_import_record(batch: ImportBatch, *, organization=None, contact=None, action: str, before=None):
+    ImportBatchRecord.objects.create(
+        batch=batch,
+        organization=organization,
+        contact=contact,
+        action=action,
+        snapshot=before or {},
+    )
+
+
+def _rollback_import_batch(batch: ImportBatch, actor):
+    if batch.status == ImportBatch.Status.ROLLED_BACK:
+        return {"detail": "Импорт уже откатан."}, status.HTTP_400_BAD_REQUEST
+
+    records = list(
+        batch.records.select_related("organization", "contact").order_by("-id")
+    )
+    reverted = 0
+    deleted = 0
+    skipped = 0
+    errors = []
+
+    for record in records:
+        try:
+            if record.action == ImportBatchRecord.Action.CREATED:
+                if record.organization_id and Organization.objects.filter(id=record.organization_id).exists():
+                    record.organization.delete()
+                    deleted += 1
+                elif record.contact_id and Contact.objects.filter(id=record.contact_id).exists():
+                    record.contact.delete()
+                    deleted += 1
+                else:
+                    skipped += 1
+            elif record.action == ImportBatchRecord.Action.UPDATED:
+                if record.organization_id and record.snapshot:
+                    org = Organization.objects.filter(id=record.organization_id).first()
+                    if org:
+                        _restore_organization_state(org, record.snapshot)
+                        reverted += 1
+                    else:
+                        skipped += 1
+                elif record.contact_id and record.snapshot:
+                    contact = Contact.objects.filter(id=record.contact_id).first()
+                    if contact:
+                        _restore_contact_state(contact, record.snapshot)
+                        reverted += 1
+                    else:
+                        skipped += 1
+                else:
+                    skipped += 1
+        except ProtectedError:
+            target = record.organization or record.contact
+            errors.append(f"Не удалось удалить {target}: есть связанные записи.")
+            skipped += 1
+        except Exception as exc:
+            errors.append(str(exc))
+            skipped += 1
+
+    batch.status = ImportBatch.Status.ROLLED_BACK
+    batch.rolled_back_at = timezone.now()
+    batch.rolled_back_by = actor
+    batch.save(update_fields=["status", "rolled_back_at", "rolled_back_by"])
+
+    return {
+        "deleted": deleted,
+        "reverted": reverted,
+        "skipped": skipped,
+        "errors": errors[:100],
+    }, status.HTTP_200_OK
+
+
 def _resolve_region(region_name):
     name = _normalize_cell(region_name)
     if not name:
@@ -705,6 +853,7 @@ def _mirror_bitrix_contact_to_local(organization_inn, bitrix_response, request_p
 
 class OrganizationViewSet(viewsets.ModelViewSet):
     serializer_class = OrganizationSerializer
+    pagination_class = RegistryPagination
     filterset_fields = ["org_type", "region", "parent_organization", "is_our_side"]
     search_fields = ["name", "short_name", "inn"]
 
@@ -742,6 +891,9 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         role = self.request.query_params.get("role")
         if role:
             qs = qs.filter(project_memberships__role=role)
+
+        if project_id or role:
+            qs = qs.distinct()
 
         return qs
 
@@ -826,6 +978,12 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         skipped = 0
         errors = []
         actor = request.user if request.user.is_authenticated else None
+        batch = ImportBatch.objects.create(
+            entity_type=ImportBatch.EntityType.ORGANIZATIONS,
+            file_name=file_obj.name,
+            uploaded_by=actor,
+            total_rows=len(rows),
+        )
 
         for line_no, row in rows:
             org_raw = _normalize_cell(
@@ -838,7 +996,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             try:
                 with transaction.atomic():
                     inn_from_col = _normalize_inn(row.get("inn"))
-                    found, ref_kind, ref_value = _find_organization_by_ref(org_raw)
+                    found, ref_kind, ref_value = _find_organization_for_import(row, org_raw)
                     org_name = org_raw if ref_kind == "name" else _trim_for_model_field(
                         Organization, "name", row.get("organization") or ""
                     )
@@ -963,14 +1121,31 @@ class OrganizationViewSet(viewsets.ModelViewSet):
 
                     if is_new:
                         created += 1
+                        _track_import_record(
+                            batch,
+                            organization=organization,
+                            action=ImportBatchRecord.Action.CREATED,
+                        )
                     else:
                         updated += 1
+                        _track_import_record(
+                            batch,
+                            organization=organization,
+                            action=ImportBatchRecord.Action.UPDATED,
+                            before=before,
+                        )
             except Exception as exc:
                 skipped += 1
                 errors.append(f"Строка {line_no}: {exc}")
 
+        batch.created_count = created
+        batch.updated_count = updated
+        batch.skipped_count = skipped
+        batch.save(update_fields=["created_count", "updated_count", "skipped_count"])
+
         return Response(
             {
+                "batch_id": batch.id,
                 "created": created,
                 "updated": updated,
                 "skipped": skipped,
@@ -1054,6 +1229,7 @@ class OrganizationInteractionViewSet(viewsets.ModelViewSet):
 
 class ContactViewSet(viewsets.ModelViewSet):
     serializer_class = ContactSerializer
+    pagination_class = RegistryPagination
     filterset_fields = ["organization", "type", "current", "is_manager"]
     search_fields = [
         "first_name",
@@ -1160,6 +1336,12 @@ class ContactViewSet(viewsets.ModelViewSet):
             )
 
         actor = request.user if request.user.is_authenticated else None
+        batch = ImportBatch.objects.create(
+            entity_type=ImportBatch.EntityType.CONTACTS,
+            file_name=file_obj.name,
+            uploaded_by=actor,
+            total_rows=len(rows),
+        )
 
         created = 0
         updated = 0
@@ -1192,26 +1374,35 @@ class ContactViewSet(viewsets.ModelViewSet):
                         row_resolved_ot_early if row_resolved_ot_early else default_org_type
                     )
 
-                    organization, ref_kind, ref_value = _find_organization_by_ref(org_raw)
-                    if organization is None and create_missing_orgs and ref_kind == "inn":
-                        region = _resolve_region(row.get("region"))
-                        short_for_org = _normalize_cell(row.get("short_name"))
-                        organization = Organization.objects.create(
-                            name=f"Организация {ref_value}",
-                            short_name=short_for_org,
-                            inn=ref_value,
-                            org_type=effective_new_org_type,
-                            region=region,
+                    organization, ref_kind, ref_value = _find_organization_for_import(row, org_raw)
+                    if organization is None and create_missing_orgs:
+                        inn_for_create = _normalize_inn(row.get("inn")) or (
+                            ref_value if ref_kind == "inn" else _normalize_inn(org_raw)
                         )
-                        org_after = _capture_organization_state(organization)
-                        _create_field_change_rows(
-                            before=None,
-                            after=org_after,
-                            fields=_ORGANIZATION_AUDIT_FIELDS,
-                            source=source,
-                            changed_by=actor,
-                            organization=organization,
-                        )
+                        if inn_for_create:
+                            region = _resolve_region(row.get("region"))
+                            short_for_org = _normalize_cell(row.get("short_name"))
+                            organization = Organization.objects.create(
+                                name=f"Организация {inn_for_create}",
+                                short_name=short_for_org,
+                                inn=inn_for_create,
+                                org_type=effective_new_org_type,
+                                region=region,
+                            )
+                            org_after = _capture_organization_state(organization)
+                            _create_field_change_rows(
+                                before=None,
+                                after=org_after,
+                                fields=_ORGANIZATION_AUDIT_FIELDS,
+                                source=source,
+                                changed_by=actor,
+                                organization=organization,
+                            )
+                            _track_import_record(
+                                batch,
+                                organization=organization,
+                                action=ImportBatchRecord.Action.CREATED,
+                            )
 
                     if organization is None:
                         errors.append(f"Строка {line_no}: организация не найдена ({org_raw})")
@@ -1366,15 +1557,32 @@ class ContactViewSet(viewsets.ModelViewSet):
                     )
                     if is_new:
                         created += 1
+                        _track_import_record(
+                            batch,
+                            contact=contact,
+                            action=ImportBatchRecord.Action.CREATED,
+                        )
                     else:
                         updated += 1
+                        _track_import_record(
+                            batch,
+                            contact=contact,
+                            action=ImportBatchRecord.Action.UPDATED,
+                            before=before,
+                        )
                     last_contact_by_org[organization.id] = contact.id
             except Exception as exc:
                 skipped += 1
                 errors.append(f"Строка {line_no}: {exc}")
 
+        batch.created_count = created
+        batch.updated_count = updated
+        batch.skipped_count = skipped
+        batch.save(update_fields=["created_count", "updated_count", "skipped_count"])
+
         return Response(
             {
+                "batch_id": batch.id,
                 "created": created,
                 "updated": updated,
                 "skipped": skipped,
@@ -1429,6 +1637,24 @@ class ContactViewSet(viewsets.ModelViewSet):
         )
         resp["Content-Disposition"] = 'attachment; filename="contacts_import_template.xlsx"'
         return resp
+
+
+class ImportBatchViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = ImportBatchSerializer
+    pagination_class = RegistryPagination
+    filterset_fields = ["entity_type", "status"]
+
+    def get_queryset(self):
+        return ImportBatch.objects.select_related("uploaded_by").order_by("-uploaded_at", "-id")
+
+    @action(detail=True, methods=["post"], url_path="rollback")
+    def rollback(self, request, pk=None):
+        batch = self.get_object()
+        payload, code = _rollback_import_batch(
+            batch,
+            request.user if request.user.is_authenticated else None,
+        )
+        return Response(payload, status=code)
 
 
 class OrganizationTagViewSet(viewsets.ModelViewSet):
