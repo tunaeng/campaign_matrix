@@ -5,6 +5,10 @@ from .views import (
     FunnelStageViewSet,
     StageChecklistItemViewSet,
     ChecklistItemOptionViewSet,
+    SubfunnelTemplateViewSet,
+    SubfunnelTemplateItemViewSet,
+    TaskTemplateStageViewSet,
+    SubfunnelTemplateBindingViewSet,
 )
 
 router = DefaultRouter()
@@ -15,6 +19,16 @@ router.register(
 )
 router.register(
     "checklist-options", ChecklistItemOptionViewSet, basename="checklist-option"
+)
+router.register("subfunnel-templates", SubfunnelTemplateViewSet, basename="subfunnel-template")
+router.register(
+    "subfunnel-template-items", SubfunnelTemplateItemViewSet, basename="subfunnel-template-item"
+)
+router.register("task-template-stages", TaskTemplateStageViewSet, basename="task-template-stage")
+router.register(
+    "subfunnel-template-bindings",
+    SubfunnelTemplateBindingViewSet,
+    basename="subfunnel-template-binding",
 )
 
 urlpatterns = [

@@ -1,3 +1,6 @@
+import uuid
+
+from django.utils.text import slugify
 from rest_framework import serializers
 from apps.organizations.models import OrganizationTag
 from .models import (
@@ -182,6 +185,9 @@ class TaskTemplateStageSerializer(serializers.ModelSerializer):
             "template",
             "name",
             "order",
+            "is_work_stage",
+            "is_active",
+            "task_status",
             "is_terminal",
             "sla_days",
             "created_at",
@@ -223,10 +229,26 @@ class SubfunnelTemplateItemSerializer(serializers.ModelSerializer):
         return attrs
 
 
+def _unique_subfunnel_template_slug(name, exclude_pk=None):
+    base = slugify(name, allow_unicode=True) or f"voronka-{uuid.uuid4().hex[:8]}"
+    base = base[:120].strip("-") or f"voronka-{uuid.uuid4().hex[:8]}"
+    slug = base
+    suffix = 2
+    qs = SubfunnelTemplate.objects.all()
+    if exclude_pk:
+        qs = qs.exclude(pk=exclude_pk)
+    while qs.filter(slug=slug).exists():
+        tail = f"-{suffix}"
+        slug = f"{base[: max(1, 120 - len(tail))]}{tail}"
+        suffix += 1
+    return slug
+
+
 class SubfunnelTemplateSerializer(serializers.ModelSerializer):
     owner_role_name = serializers.CharField(source="owner_role.name", read_only=True)
     items = SubfunnelTemplateItemSerializer(many=True, read_only=True)
     stages = TaskTemplateStageSerializer(many=True, read_only=True)
+    slug = serializers.SlugField(read_only=True)
 
     class Meta:
         model = SubfunnelTemplate
@@ -238,13 +260,19 @@ class SubfunnelTemplateSerializer(serializers.ModelSerializer):
             "owner_role",
             "owner_role_name",
             "is_active",
+            "auto_create_on_collect_import",
+            "advance_lead_on_task_stage_forward",
             "version",
             "stages",
             "items",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "slug", "created_at", "updated_at"]
+
+    def create(self, validated_data):
+        validated_data["slug"] = _unique_subfunnel_template_slug(validated_data["name"])
+        return super().create(validated_data)
 
 
 class SubfunnelTemplateBindingSerializer(serializers.ModelSerializer):
@@ -269,6 +297,7 @@ class SubfunnelTemplateBindingSerializer(serializers.ModelSerializer):
             "default_specialist",
             "default_specialist_name",
             "is_active",
+            "advance_lead_on_task_stage_forward",
             "created_at",
             "updated_at",
         ]

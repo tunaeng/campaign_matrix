@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('funnels', '0011_add_organization_list_stage_data'),
+        ('funnels', '0005_funnel_tags'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

@@ -223,6 +223,14 @@ class SubfunnelTemplate(models.Model):
         verbose_name="Базовая роль-владелец",
     )
     is_active = models.BooleanField(default=True, verbose_name="Активна")
+    auto_create_on_collect_import = models.BooleanField(
+        default=True,
+        verbose_name="Создавать карточки при добавлении/импорте организаций и контактов",
+    )
+    advance_lead_on_task_stage_forward = models.BooleanField(
+        default=False,
+        verbose_name='Переводить лид на следующую стадию при переводе карточки задачи вперед',
+    )
     version = models.PositiveIntegerField(default=1, verbose_name="Версия шаблона")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -237,6 +245,13 @@ class SubfunnelTemplate(models.Model):
 
 
 class TaskTemplateStage(models.Model):
+    class TaskStatus(models.TextChoices):
+        BACKLOG = "backlog", "Бэклог"
+        IN_PROGRESS = "in_progress", "В работе"
+        PAUSED = "paused", "Пауза"
+        REJECTED = "rejected", "Отказ"
+        DONE = "done", "Готово"
+
     template = models.ForeignKey(
         SubfunnelTemplate,
         on_delete=models.CASCADE,
@@ -245,6 +260,14 @@ class TaskTemplateStage(models.Model):
     )
     name = models.CharField(max_length=200, verbose_name="Название этапа")
     order = models.PositiveIntegerField(default=0, verbose_name="Порядок")
+    is_work_stage = models.BooleanField(default=True, verbose_name="Этап в работе")
+    is_active = models.BooleanField(default=True, verbose_name="Активен")
+    task_status = models.CharField(
+        max_length=30,
+        choices=TaskStatus.choices,
+        default=TaskStatus.IN_PROGRESS,
+        verbose_name="Статус задачи для этапа",
+    )
     is_terminal = models.BooleanField(default=False, verbose_name="Финальный этап")
     sla_days = models.PositiveIntegerField(default=0, verbose_name="SLA (дней)")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -387,6 +410,10 @@ class SubfunnelTemplateBinding(models.Model):
         verbose_name="Специалист по умолчанию",
     )
     is_active = models.BooleanField(default=True, verbose_name="Активна")
+    advance_lead_on_task_stage_forward = models.BooleanField(
+        default=False,
+        verbose_name='Автопереводить лид вперед при переводе карточки задачи (только для привязки "к стадии")',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
