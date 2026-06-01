@@ -14,12 +14,11 @@ import {
   useCreateChecklistItem, useUpdateChecklistItem, useDeleteChecklistItem,
   useCreateChecklistOption, useDeleteChecklistOption,
   useOrganizationTags, useUsers,
-  useSubfunnelBindings, useSubfunnelTemplates, useCreateSubfunnelBinding, useRoles, useCreateSubfunnelTemplate,
-  useTaskTemplateStages, useCreateTaskTemplateStage, usePatchTaskTemplateStage, useDeleteTaskTemplateStage,
-  useCreateSubfunnelTemplateItem, usePatchSubfunnelTemplateItem, useDeleteSubfunnelTemplateItem,
+  useSubfunnelBindings, useSubfunnelTemplates, useCreateSubfunnelBinding, usePatchSubfunnelBinding, useDeleteSubfunnelBinding, useRoles,
 } from '../../api/hooks';
-import type { FunnelStage, StageChecklistItem, SubfunnelTemplate } from '../../types';
+import type { FunnelStage, StageChecklistItem, SubfunnelTemplateBinding } from '../../types';
 import EntityTagSelect from '../../components/EntityTagSelect';
+import { isCanonicalTaskFunnel } from '../../utils/taskFunnelCatalog';
 
 /** Типы подтверждения (можно несколько). Пустой список — без подтверждения. */
 const confirmationTypeOptions = [
@@ -42,15 +41,6 @@ const stageRoleOptions = [
   { value: 'primary_contact_specialist', label: 'Специалист по первичному контакту' },
 ];
 
-function toSlug(value: string) {
-  return value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9а-яё]+/gi, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 120);
-}
-
 export default function FunnelDetailPage() {
   const { message } = App.useApp();
   const { id } = useParams<{ id: string }>();
@@ -71,20 +61,11 @@ export default function FunnelDetailPage() {
   const { data: subfunnelTemplates } = useSubfunnelTemplates({ is_active: true, page_size: 200 });
   const { data: rolesData } = useRoles({ is_active: true, page_size: 200 });
   const createSubfunnelBinding = useCreateSubfunnelBinding(id!);
-  const createSubfunnelTemplate = useCreateSubfunnelTemplate();
-  const [selectedTaskTemplate, setSelectedTaskTemplate] = useState<SubfunnelTemplate | null>(null);
-  const [taskTemplateEditorOpen, setTaskTemplateEditorOpen] = useState(false);
-  const [taskStageModalOpen, setTaskStageModalOpen] = useState(false);
-  const [taskItemModalOpen, setTaskItemModalOpen] = useState(false);
-  const [taskStageForm] = Form.useForm();
-  const [taskItemForm] = Form.useForm();
-  const { data: taskStages = [] } = useTaskTemplateStages(selectedTaskTemplate?.id);
-  const createTaskStage = useCreateTaskTemplateStage(selectedTaskTemplate?.id || 0);
-  const patchTaskStage = usePatchTaskTemplateStage();
-  const deleteTaskStage = useDeleteTaskTemplateStage();
-  const createTaskItem = useCreateSubfunnelTemplateItem(selectedTaskTemplate?.id || 0);
-  const patchTaskItem = usePatchSubfunnelTemplateItem();
-  const deleteTaskItem = useDeleteSubfunnelTemplateItem();
+  const patchSubfunnelBinding = usePatchSubfunnelBinding(id!);
+  const deleteSubfunnelBinding = useDeleteSubfunnelBinding(id!);
+  const taskFunnelOptions = (subfunnelTemplates?.results || [])
+    .filter((t) => isCanonicalTaskFunnel(t.slug))
+    .map((t) => ({ value: t.id, label: t.name }));
   const userOptions = (usersData?.results || []).map((u) => ({
     value: u.id,
     label: u.full_name || u.username,
@@ -103,15 +84,10 @@ export default function FunnelDetailPage() {
   const [optionValue, setOptionValue] = useState('');
   const [bindingModalOpen, setBindingModalOpen] = useState(false);
   const [bindingForm] = Form.useForm();
-  const [templateModalOpen, setTemplateModalOpen] = useState(false);
-  const [templateForm] = Form.useForm();
+  const [editingBinding, setEditingBinding] = useState<SubfunnelTemplateBinding | null>(null);
 
   if (isLoading) return <div style={{ textAlign: 'center', paddingTop: 100 }}><Spin size="large" /></div>;
   if (!funnel) return <Typography.Text>Воронка не найдена</Typography.Text>;
-  const selectedTaskTemplateLive =
-    selectedTaskTemplate
-      ? (subfunnelTemplates?.results || []).find((t) => t.id === selectedTaskTemplate.id) || selectedTaskTemplate
-      : null;
 
   const handleSaveName = async () => {
     if (!nameValue.trim()) return;
@@ -260,49 +236,6 @@ export default function FunnelDetailPage() {
   const handleDeleteOption = async (optionId: number) => {
     await deleteOption.mutateAsync(optionId);
     message.success('Вариант удалён');
-  };
-
-  const openTaskTemplateEditor = (template: SubfunnelTemplate) => {
-    setSelectedTaskTemplate(template);
-    setTaskTemplateEditorOpen(true);
-  };
-
-  const handleCreateTaskStage = async () => {
-    if (!selectedTaskTemplate) return;
-    try {
-      const values = await taskStageForm.validateFields();
-      await createTaskStage.mutateAsync({
-        name: values.name,
-        order: values.order ?? taskStages.length,
-        is_terminal: !!values.is_terminal,
-        sla_days: values.sla_days ?? 0,
-      });
-      message.success('Этап задачи добавлен');
-      setTaskStageModalOpen(false);
-      taskStageForm.resetFields();
-    } catch {
-      // validation
-    }
-  };
-
-  const handleCreateTaskItem = async () => {
-    if (!selectedTaskTemplateLive) return;
-    try {
-      const values = await taskItemForm.validateFields();
-      await createTaskItem.mutateAsync({
-        title: values.title,
-        order: values.order ?? selectedTaskTemplateLive.items.length,
-        execution_type: values.execution_type || 'checklist_item',
-        stage: values.stage ?? null,
-        default_role: values.default_role ?? null,
-        default_specialist: values.default_specialist ?? null,
-      });
-      message.success('Пункт шаблона добавлен');
-      setTaskItemModalOpen(false);
-      taskItemForm.resetFields();
-    } catch {
-      // validation
-    }
   };
 
   const renderChecklistItem = (stage: FunnelStage, item: StageChecklistItem, index: number, total: number) => (
@@ -499,6 +432,28 @@ export default function FunnelDetailPage() {
       </div>
     ),
   }));
+  const checklistTargetOptions = funnel.stages
+    .flatMap((s) => (s.checklist_items || []).map((i) => ({ value: i.id, label: `${s.name} / ${i.text}` })));
+  const stageNameById = new Map(funnel.stages.map((s) => [s.id, s.name]));
+  const checklistItemLabelById = new Map(
+    funnel.stages.flatMap((s) =>
+      (s.checklist_items || []).map((i) => [i.id, `${s.name} / ${i.text}`] as const),
+    ),
+  );
+
+  const renderBindingTarget = (row: SubfunnelTemplateBinding) => {
+    if (row.binding_type === 'stage') {
+      return row.target_stage ? (stageNameById.get(row.target_stage) || `Стадия #${row.target_stage}`) : '—';
+    }
+    if (row.binding_type === 'checklist_item') {
+      return row.target_checklist_item
+        ? (checklistItemLabelById.get(row.target_checklist_item) || `Пункт #${row.target_checklist_item}`)
+        : '—';
+    }
+    const from = row.from_stage ? (stageNameById.get(row.from_stage) || `#${row.from_stage}`) : null;
+    const to = row.to_stage ? (stageNameById.get(row.to_stage) || `#${row.to_stage}`) : null;
+    return from && to ? `${from} → ${to}` : '—';
+  };
 
   return (
     <div>
@@ -586,64 +541,17 @@ export default function FunnelDetailPage() {
       </Card>
 
       <Card
-        title="Шаблоны задач"
-        style={{ marginTop: 16 }}
-        extra={(
-          <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setTemplateModalOpen(true)}>
-            Добавить шаблон задачи
-          </Button>
-        )}
-      >
-        <Table
-          size="small"
-          rowKey="id"
-          pagination={false}
-          dataSource={subfunnelTemplates?.results || []}
-          columns={[
-            { title: 'Название', dataIndex: 'name', key: 'name' },
-            { title: 'Slug', dataIndex: 'slug', key: 'slug', width: 220 },
-            {
-              title: 'Роль-владелец',
-              dataIndex: 'owner_role_name',
-              key: 'owner_role_name',
-              render: (v?: string | null) => v || '—',
-            },
-            {
-              title: 'Элементов',
-              dataIndex: 'items',
-              key: 'items',
-              width: 120,
-              render: (items: unknown[]) => (items || []).length,
-            },
-            {
-              title: 'Этапов',
-              dataIndex: 'stages',
-              key: 'stages',
-              width: 100,
-              render: (stages: unknown[]) => (stages || []).length,
-            },
-            {
-              title: 'Действия',
-              key: 'actions',
-              width: 180,
-              render: (_: unknown, row: SubfunnelTemplate) => (
-                <Button size="small" onClick={() => openTaskTemplateEditor(row)}>
-                  Этапы и пункты
-                </Button>
-              ),
-            },
-          ]}
-          locale={{ emptyText: 'Шаблоны задач не созданы' }}
-        />
-      </Card>
-
-      <Card
         title="Задачи воронки"
         style={{ marginTop: 16 }}
         extra={(
-          <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setBindingModalOpen(true)}>
-            Привязать задачу
-          </Button>
+          <Space>
+            <Button type="link" onClick={() => navigate('/funnels?tab=tasks')}>
+              Воронки задач
+            </Button>
+            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setBindingModalOpen(true)}>
+              Привязать задачу
+            </Button>
+          </Space>
         )}
       >
         <Table
@@ -662,6 +570,11 @@ export default function FunnelDetailPage() {
               ),
             },
             {
+              title: 'Привязка к стадии/пункту',
+              key: 'binding_target',
+              render: (_: unknown, row: SubfunnelTemplateBinding) => renderBindingTarget(row),
+            },
+            {
               title: 'Роль',
               dataIndex: 'role_name',
               key: 'role_name',
@@ -672,6 +585,66 @@ export default function FunnelDetailPage() {
               dataIndex: 'default_specialist_name',
               key: 'default_specialist_name',
               render: (v?: string | null) => v || '—',
+            },
+            {
+              title: 'Автоперевод лида',
+              key: 'advance_lead_on_task_stage_forward',
+              width: 170,
+              render: (_: unknown, row: SubfunnelTemplateBinding) => (
+                <Switch
+                  size="small"
+                  checked={!!row.advance_lead_on_task_stage_forward}
+                  disabled={row.binding_type !== 'stage'}
+                  onChange={(checked) =>
+                    patchSubfunnelBinding.mutate({
+                      id: row.id,
+                      advance_lead_on_task_stage_forward: checked,
+                    })
+                  }
+                />
+              ),
+            },
+            {
+              title: '',
+              key: 'actions',
+              width: 180,
+              render: (_: unknown, row: SubfunnelTemplateBinding) => (
+                <Space size="small">
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      setEditingBinding(row);
+                      bindingForm.setFieldsValue({
+                        template: row.template,
+                        binding_type: row.binding_type,
+                        target_stage: row.target_stage ?? undefined,
+                        target_checklist_item: row.target_checklist_item ?? undefined,
+                        from_stage: row.from_stage ?? undefined,
+                        to_stage: row.to_stage ?? undefined,
+                        role: row.role ?? undefined,
+                        default_specialist: row.default_specialist ?? undefined,
+                        advance_lead_on_task_stage_forward: !!row.advance_lead_on_task_stage_forward,
+                      });
+                      setBindingModalOpen(true);
+                    }}
+                  >
+                    Изменить
+                  </Button>
+                  <Popconfirm
+                    title="Удалить привязку задачи?"
+                    okText="Удалить"
+                    cancelText="Отмена"
+                    onConfirm={async () => {
+                      await deleteSubfunnelBinding.mutateAsync(row.id);
+                      message.success('Привязка удалена');
+                    }}
+                  >
+                    <Button size="small" danger loading={deleteSubfunnelBinding.isPending}>
+                      Удалить
+                    </Button>
+                  </Popconfirm>
+                </Space>
+              ),
             },
           ]}
           locale={{ emptyText: 'Привязки задач не настроены' }}
@@ -783,26 +756,36 @@ export default function FunnelDetailPage() {
       </Modal>
 
       <Modal
-        title="Новая привязка задачи"
+        title={editingBinding ? 'Изменить привязку задачи' : 'Новая привязка задачи'}
         open={bindingModalOpen}
-        onCancel={() => { setBindingModalOpen(false); bindingForm.resetFields(); }}
+        onCancel={() => {
+          setBindingModalOpen(false);
+          setEditingBinding(null);
+          bindingForm.resetFields();
+        }}
         onOk={async () => {
           try {
             const values = await bindingForm.validateFields();
-            await createSubfunnelBinding.mutateAsync(values);
-            message.success('Задача привязана');
+            if (editingBinding) {
+              await patchSubfunnelBinding.mutateAsync({ id: editingBinding.id, ...values });
+              message.success('Привязка обновлена');
+            } else {
+              await createSubfunnelBinding.mutateAsync(values);
+              message.success('Задача привязана');
+            }
             setBindingModalOpen(false);
+            setEditingBinding(null);
             bindingForm.resetFields();
           } catch {
             // validation
           }
         }}
-        confirmLoading={createSubfunnelBinding.isPending}
+        confirmLoading={createSubfunnelBinding.isPending || patchSubfunnelBinding.isPending}
       >
         <Form form={bindingForm} layout="vertical">
           <Form.Item name="template" label="Шаблон задачи" rules={[{ required: true }]}>
             <Select
-              options={(subfunnelTemplates?.results || []).map((t) => ({ value: t.id, label: t.name }))}
+              options={taskFunnelOptions}
               showSearch
               optionFilterProp="label"
             />
@@ -819,6 +802,9 @@ export default function FunnelDetailPage() {
           <Form.Item name="target_stage" label="Целевая стадия">
             <Select options={funnel.stages.map((s) => ({ value: s.id, label: s.name }))} allowClear />
           </Form.Item>
+          <Form.Item name="target_checklist_item" label="Целевой пункт чек-листа">
+            <Select options={checklistTargetOptions} allowClear showSearch optionFilterProp="label" />
+          </Form.Item>
           <Form.Item name="from_stage" label="Стадия начала диапазона">
             <Select options={funnel.stages.map((s) => ({ value: s.id, label: s.name }))} allowClear />
           </Form.Item>
@@ -834,271 +820,19 @@ export default function FunnelDetailPage() {
           <Form.Item name="default_specialist" label="Специалист по умолчанию">
             <Select allowClear options={userOptions} />
           </Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal
-        title="Новый шаблон задачи"
-        open={templateModalOpen}
-        onCancel={() => { setTemplateModalOpen(false); templateForm.resetFields(); }}
-        onOk={async () => {
-          try {
-            const values = await templateForm.validateFields();
-            await createSubfunnelTemplate.mutateAsync({
-              name: values.name,
-              slug: values.slug,
-              description: values.description || '',
-              owner_role: values.owner_role || null,
-              is_active: true,
-            });
-            message.success('Шаблон задачи создан');
-            setTemplateModalOpen(false);
-            templateForm.resetFields();
-          } catch {
-            // validation
-          }
-        }}
-        confirmLoading={createSubfunnelTemplate.isPending}
-      >
-        <Form
-          form={templateForm}
-          layout="vertical"
-          onValuesChange={(changed, all) => {
-            if (changed.name && !all.slug) {
-              templateForm.setFieldValue('slug', toSlug(String(changed.name)));
-            }
-          }}
-        >
-          <Form.Item name="name" label="Название" rules={[{ required: true, message: 'Укажите название' }]}>
-            <Input placeholder="Например: Рассылка и первичный контакт" />
-          </Form.Item>
-          <Form.Item
-            name="slug"
-            label="Slug"
-            rules={[
-              { required: true, message: 'Укажите slug' },
-              { pattern: /^[a-z0-9-]+$/, message: 'Только латиница, цифры и дефисы' },
-            ]}
-          >
-            <Input placeholder="email-and-primary-contact" />
-          </Form.Item>
-          <Form.Item name="owner_role" label="Роль-владелец">
-            <Select
-              allowClear
-              options={(rolesData?.results || []).map((r) => ({ value: r.id, label: r.name }))}
-            />
-          </Form.Item>
-          <Form.Item name="description" label="Описание">
-            <Input.TextArea rows={3} placeholder="Краткое описание шаблона задачи" />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal
-        title={selectedTaskTemplateLive ? `Шаблон задачи: ${selectedTaskTemplateLive.name}` : 'Шаблон задачи'}
-        open={taskTemplateEditorOpen}
-        width={1000}
-        footer={null}
-        onCancel={() => {
-          setTaskTemplateEditorOpen(false);
-          setSelectedTaskTemplate(null);
-        }}
-      >
-        {!selectedTaskTemplateLive ? (
-          <Empty description="Выберите шаблон задачи" />
-        ) : (
-          <Space direction="vertical" style={{ width: '100%' }} size={16}>
-            <Card
-              size="small"
-              title="Этапы мини-воронки задачи"
-              extra={(
-                <Button
-                  size="small"
-                  type="primary"
-                  onClick={() => {
-                    taskStageForm.setFieldsValue({ order: taskStages.length, sla_days: 0, is_terminal: false });
-                    setTaskStageModalOpen(true);
-                  }}
+          <Form.Item noStyle shouldUpdate>
+            {({ getFieldValue }) => (
+              getFieldValue('binding_type') === 'stage' ? (
+                <Form.Item
+                  name="advance_lead_on_task_stage_forward"
+                  label="Автопереводить лид вперед при переводе карточки задачи"
+                  valuePropName="checked"
+                  initialValue={false}
                 >
-                  Добавить этап
-                </Button>
-              )}
-            >
-              <Table
-                size="small"
-                rowKey="id"
-                pagination={false}
-                dataSource={taskStages}
-                locale={{ emptyText: 'Этапы не настроены' }}
-                columns={[
-                  { title: 'Порядок', dataIndex: 'order', key: 'order', width: 90 },
-                  { title: 'Название', dataIndex: 'name', key: 'name' },
-                  {
-                    title: 'SLA (дней)',
-                    dataIndex: 'sla_days',
-                    key: 'sla_days',
-                    width: 130,
-                    render: (v: number, row: any) => (
-                      <InputNumber
-                        min={0}
-                        size="small"
-                        value={v}
-                        onChange={(next) => patchTaskStage.mutate({ id: row.id, sla_days: next ?? 0 })}
-                      />
-                    ),
-                  },
-                  {
-                    title: 'Terminal',
-                    dataIndex: 'is_terminal',
-                    key: 'is_terminal',
-                    width: 120,
-                    render: (v: boolean, row: any) => (
-                      <Switch
-                        size="small"
-                        checked={v}
-                        onChange={(checked) => patchTaskStage.mutate({ id: row.id, is_terminal: checked })}
-                      />
-                    ),
-                  },
-                  {
-                    title: 'Удалить',
-                    key: 'delete',
-                    width: 100,
-                    render: (_: unknown, row: any) => (
-                      <Popconfirm
-                        title="Удалить этап задачи?"
-                        onConfirm={() => deleteTaskStage.mutate({ id: row.id, templateId: selectedTaskTemplateLive.id })}
-                      >
-                        <Button size="small" danger icon={<DeleteOutlined />} />
-                      </Popconfirm>
-                    ),
-                  },
-                ]}
-              />
-            </Card>
-
-            <Card
-              size="small"
-              title="Пункты шаблона задачи"
-              extra={(
-                <Button size="small" type="primary" onClick={() => setTaskItemModalOpen(true)}>
-                  Добавить пункт
-                </Button>
-              )}
-            >
-              <Table
-                size="small"
-                rowKey="id"
-                pagination={false}
-                dataSource={selectedTaskTemplateLive.items || []}
-                locale={{ emptyText: 'Пункты не добавлены' }}
-                columns={[
-                  { title: 'Порядок', dataIndex: 'order', key: 'order', width: 90 },
-                  { title: 'Название', dataIndex: 'title', key: 'title' },
-                  {
-                    title: 'Тип',
-                    dataIndex: 'execution_type',
-                    key: 'execution_type',
-                    width: 170,
-                  },
-                  {
-                    title: 'Этап',
-                    dataIndex: 'stage',
-                    key: 'stage',
-                    width: 220,
-                    render: (v: number | null, row: any) => (
-                      <Select
-                        allowClear
-                        size="small"
-                        value={v ?? undefined}
-                        options={taskStages.map((s) => ({ value: s.id, label: `${s.order}. ${s.name}` }))}
-                        onChange={(next) => patchTaskItem.mutate({ id: row.id, stage: next ?? null })}
-                      />
-                    ),
-                  },
-                  {
-                    title: '',
-                    key: 'delete',
-                    width: 80,
-                    render: (_: unknown, row: any) => (
-                      <Popconfirm
-                        title="Удалить пункт?"
-                        onConfirm={() => deleteTaskItem.mutate(row.id)}
-                      >
-                        <Button size="small" danger icon={<DeleteOutlined />} />
-                      </Popconfirm>
-                    ),
-                  },
-                ]}
-              />
-            </Card>
-          </Space>
-        )}
-      </Modal>
-
-      <Modal
-        title="Новый этап задачи"
-        open={taskStageModalOpen}
-        onCancel={() => {
-          setTaskStageModalOpen(false);
-          taskStageForm.resetFields();
-        }}
-        onOk={handleCreateTaskStage}
-        confirmLoading={createTaskStage.isPending}
-      >
-        <Form form={taskStageForm} layout="vertical">
-          <Form.Item name="name" label="Название" rules={[{ required: true, message: 'Укажите название' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="order" label="Порядок" initialValue={0}>
-            <InputNumber min={0} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="sla_days" label="SLA (дней)" initialValue={0}>
-            <InputNumber min={0} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="is_terminal" label="Финальный этап" valuePropName="checked">
-            <Switch />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal
-        title="Новый пункт шаблона задачи"
-        open={taskItemModalOpen}
-        onCancel={() => {
-          setTaskItemModalOpen(false);
-          taskItemForm.resetFields();
-        }}
-        onOk={handleCreateTaskItem}
-        confirmLoading={createTaskItem.isPending}
-      >
-        <Form form={taskItemForm} layout="vertical">
-          <Form.Item name="title" label="Название пункта" rules={[{ required: true, message: 'Укажите название' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="order" label="Порядок" initialValue={0}>
-            <InputNumber min={0} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="execution_type" label="Тип исполнения" initialValue="checklist_item">
-            <Select
-              options={[
-                { value: 'stage', label: 'Отдельная стадия' },
-                { value: 'checklist_item', label: 'Пункт чек-листа' },
-                { value: 'stage_range_checklist', label: 'Чек-лист диапазона стадий' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="stage" label="Этап мини-воронки">
-            <Select
-              allowClear
-              options={taskStages.map((s) => ({ value: s.id, label: `${s.order}. ${s.name}` }))}
-            />
-          </Form.Item>
-          <Form.Item name="default_role" label="Роль по умолчанию">
-            <Select allowClear options={(rolesData?.results || []).map((r) => ({ value: r.id, label: r.name }))} />
-          </Form.Item>
-          <Form.Item name="default_specialist" label="Исполнитель по умолчанию">
-            <Select allowClear options={userOptions} />
+                  <Switch />
+                </Form.Item>
+              ) : null
+            )}
           </Form.Item>
         </Form>
       </Modal>

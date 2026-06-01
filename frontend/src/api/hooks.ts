@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import client from './client';
 import type {
   PaginatedResponse, Campaign, CampaignDetail,
@@ -6,9 +6,9 @@ import type {
   FederalOperator, Organization, OrganizationTag, Project, ActingOrganization, Quota, DemandMatrix, UserShort,
   Funnel, FunnelDetail, FunnelStage, StageChecklistItem, ChecklistItemOption, Contact, EntityFieldChange, WorkloadDashboardResponse,
   RoleDefinition, UserRoleAssignment, SubfunnelTemplate, SubfunnelTemplateBinding, CampaignSubfunnel,
-  LeadSubfunnel, LeadSubfunnelBulkUpdateResult, CampaignCollectStageImportResult,
+  LeadSubfunnel, LeadSubfunnelBulkUpdateResult, LeadSubfunnelBulkChecklistResult, CampaignCollectStageImportResult,
   OrganizationListCaptureResult, RegionTaskCaptureSummary,
-  SubfunnelWorkspaceResponse, TaskTemplateStage,
+  SubfunnelWorkspaceResponse, TaskTemplateStage, SubfunnelTemplateItem,
 } from '../types';
 
 /** Второй сегмент ключа всегда string: из URL (useParams) и из API (number) иначе не сходятся при invalidate. */
@@ -101,10 +101,15 @@ export function useFederalOperators(params?: Record<string, any>) {
 }
 
 export function useOrganizations(params?: Record<string, any>) {
-  const merged = { page_size: 500, ...(params ?? {}) };
+  const merged =
+    params?.page != null || params?.page_size != null
+      ? { ...(params ?? {}) }
+      : { page_size: 500, ...(params ?? {}) };
+  const paginated = params?.page != null || params?.page_size != null;
   return useQuery<PaginatedResponse<Organization>>({
     queryKey: ['organizations', merged],
     queryFn: () => client.get('/organizations/', { params: merged }).then((r) => r.data),
+    placeholderData: paginated ? keepPreviousData : undefined,
   });
 }
 
@@ -474,10 +479,41 @@ export function useCreateSubfunnelTemplate() {
   });
 }
 
+export function usePatchSubfunnelTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: number } & Partial<SubfunnelTemplate>) =>
+      client.patch(`/subfunnel-templates/${id}/`, data).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subfunnel-templates'] });
+    },
+  });
+}
+
+export function useDeleteSubfunnelTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => client.delete(`/subfunnel-templates/${id}/`).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subfunnel-templates'] });
+      qc.invalidateQueries({ queryKey: ['task-template-stages'] });
+      qc.invalidateQueries({ queryKey: ['subfunnel-template-items'] });
+    },
+  });
+}
+
 export function useTaskTemplateStages(templateId?: number | string) {
   return useQuery<TaskTemplateStage[]>({
     queryKey: ['task-template-stages', templateId],
     queryFn: () => client.get(`/subfunnel-templates/${templateId}/stages/`).then(r => r.data),
+    enabled: !!templateId,
+  });
+}
+
+export function useSubfunnelTemplateItems(templateId?: number | string) {
+  return useQuery<SubfunnelTemplateItem[]>({
+    queryKey: ['subfunnel-template-items', templateId],
+    queryFn: () => client.get(`/subfunnel-templates/${templateId}/items/`).then(r => r.data),
     enabled: !!templateId,
   });
 }
@@ -563,6 +599,29 @@ export function useCreateSubfunnelBinding(funnelId: number | string) {
   return useMutation({
     mutationFn: (data: Partial<SubfunnelTemplateBinding>) =>
       client.post(`/funnels/${funnelId}/subfunnel-bindings/`, data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subfunnel-bindings', funnelId] });
+      qc.invalidateQueries({ queryKey: ['funnel', funnelId] });
+    },
+  });
+}
+
+export function usePatchSubfunnelBinding(funnelId: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: number } & Partial<SubfunnelTemplateBinding>) =>
+      client.patch(`/subfunnel-template-bindings/${id}/`, data).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subfunnel-bindings', funnelId] });
+      qc.invalidateQueries({ queryKey: ['funnel', funnelId] });
+    },
+  });
+}
+
+export function useDeleteSubfunnelBinding(funnelId: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => client.delete(`/subfunnel-template-bindings/${id}/`).then((r) => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['subfunnel-bindings', funnelId] });
       qc.invalidateQueries({ queryKey: ['funnel', funnelId] });
@@ -871,6 +930,32 @@ export function useRejectLead(leadId: number | string) {
   });
 }
 
+export function useBulkUpdateLeads() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { ids: number[]; current_stage: number | null }) =>
+      client.post<import('../types').BulkActionResult>('/leads/bulk-update/', data).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['leads'] });
+      qc.invalidateQueries({ queryKey: ['campaign'] });
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+  });
+}
+
+export function useBulkDeleteLeads() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: number[]) =>
+      client.post<import('../types').BulkActionResult>('/leads/bulk-delete/', { ids }).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['leads'] });
+      qc.invalidateQueries({ queryKey: ['campaign'] });
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+  });
+}
+
 // Campaigns
 export function useCampaigns(params?: Record<string, any>) {
   return useQuery<PaginatedResponse<Campaign>>({
@@ -946,6 +1031,31 @@ export function useDeleteCampaign() {
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: ['campaigns'] });
       qc.removeQueries({ queryKey: campaignDetailQueryKey(id) });
+    },
+  });
+}
+
+export function useBulkUpdateCampaigns() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      ids: number[];
+      board_column?: string;
+      status?: string;
+    }) => client.post<import('../types').BulkActionResult>('/campaigns/bulk-update/', data).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+  });
+}
+
+export function useBulkDeleteCampaigns() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: number[]) =>
+      client.post<import('../types').BulkActionResult>('/campaigns/bulk-delete/', { ids }).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
     },
   });
 }
@@ -1049,7 +1159,7 @@ function invalidateTaskRelatedQueries(qc: ReturnType<typeof useQueryClient>, lea
   qc.invalidateQueries({ queryKey: ['leads'] });
   qc.invalidateQueries({ queryKey: ['campaign'] });
   if (leadId) {
-    qc.invalidateQueries({ queryKey: ['lead', leadId] });
+    qc.invalidateQueries({ queryKey: ['lead', String(leadId)] });
   }
 }
 
@@ -1136,10 +1246,36 @@ export function useOrganizationListCapture(campaignId?: number | string) {
     mutationFn: (data: {
       mode?: 'minimal' | 'full';
       campaign_region_id?: number;
+      force_task_addition?: boolean;
+      source_lead_id?: number;
+      source_transfer_comment?: string;
       items: Array<Record<string, any>>;
     }) =>
       client
         .post<OrganizationListCaptureResult>(`/campaigns/${campaignId}/organization-list-capture/`, data)
+        .then((r) => r.data),
+    onSuccess: () => {
+      invalidateTaskRelatedQueries(qc);
+      if (campaignId) {
+        qc.invalidateQueries({ queryKey: ['campaign', String(campaignId)] });
+      }
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+  });
+}
+
+export function useOrganizationListSelect(campaignId?: number | string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      campaign_region_id?: number;
+      force_task_addition?: boolean;
+      source_lead_id?: number;
+      source_transfer_comment?: string;
+      items: Array<{ organization_id: number; contact_id?: number | null }>;
+    }) =>
+      client
+        .post<CampaignCollectStageImportResult>(`/campaigns/${campaignId}/organization-list-select/`, data)
         .then((r) => r.data),
     onSuccess: () => {
       invalidateTaskRelatedQueries(qc);
@@ -1168,7 +1304,34 @@ export function useBulkUpdateLeadSubfunnels() {
       due_at?: string | null;
       clear_due_at?: boolean;
       stage_id?: number | null;
+      status?: string;
     }) => client.post<LeadSubfunnelBulkUpdateResult>('/lead-subfunnels/bulk-update/', data).then(r => r.data),
+    onSuccess: () => {
+      invalidateTaskRelatedQueries(qc);
+    },
+  });
+}
+
+export function useBulkUpdateLeadSubfunnelChecklist() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      ids: number[];
+      template_item_id: number;
+      is_completed?: boolean;
+      text_value?: string;
+    }) => client.post<LeadSubfunnelBulkChecklistResult>('/lead-subfunnels/bulk-checklist/', data).then(r => r.data),
+    onSuccess: () => {
+      invalidateTaskRelatedQueries(qc);
+    },
+  });
+}
+
+export function useBulkDeleteLeadSubfunnels() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: number[]) =>
+      client.post<import('../types').BulkActionResult>('/lead-subfunnels/bulk-delete/', { ids }).then((r) => r.data),
     onSuccess: () => {
       invalidateTaskRelatedQueries(qc);
     },
@@ -1178,10 +1341,15 @@ export function useBulkUpdateLeadSubfunnels() {
 // --- Contacts ---
 
 export function useContacts(params?: Record<string, any>) {
-  const merged = { page_size: 200, ...(params ?? {}) };
+  const merged =
+    params?.page != null || params?.page_size != null
+      ? { ...(params ?? {}) }
+      : { page_size: 200, ...(params ?? {}) };
+  const paginated = params?.page != null || params?.page_size != null;
   return useQuery<PaginatedResponse<Contact>>({
     queryKey: ['contacts', merged],
     queryFn: () => client.get('/contacts/', { params: merged }).then(r => r.data),
+    placeholderData: paginated ? keepPreviousData : undefined,
   });
 }
 
@@ -1192,6 +1360,15 @@ export function useContactsByOrganization(orgName: string | undefined) {
       client.get('/contacts/', { params: { organization_name: orgName, page_size: 200 } })
         .then(r => r.data.results ?? r.data),
     enabled: !!orgName,
+  });
+}
+
+export function useContactsByOrganizationId(organizationId?: number) {
+  return useQuery<PaginatedResponse<Contact>>({
+    queryKey: ['contacts', 'by-org-id', organizationId],
+    queryFn: () =>
+      client.get('/contacts/', { params: { organization: organizationId, page_size: 200 } }).then((r) => r.data),
+    enabled: !!organizationId,
   });
 }
 
@@ -1221,6 +1398,7 @@ export function useImportContactsXlsx() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['contacts'] });
       qc.invalidateQueries({ queryKey: ['organizations'] });
+      qc.invalidateQueries({ queryKey: ['import-batches'] });
     },
   });
 }
@@ -1232,6 +1410,27 @@ export function useImportOrganizationsXlsx() {
       client.post('/organizations/import-xlsx/', formData).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['organizations'] });
+      qc.invalidateQueries({ queryKey: ['import-batches'] });
+    },
+  });
+}
+
+export function useImportBatches(params?: Record<string, any>) {
+  return useQuery<PaginatedResponse<import('../types').ImportBatch>>({
+    queryKey: ['import-batches', params],
+    queryFn: () => client.get('/import-batches/', { params }).then(r => r.data),
+  });
+}
+
+export function useRollbackImportBatch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (batchId: number) =>
+      client.post<import('../types').ImportBatchRollbackResult>(`/import-batches/${batchId}/rollback/`).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['import-batches'] });
+      qc.invalidateQueries({ queryKey: ['organizations'] });
+      qc.invalidateQueries({ queryKey: ['contacts'] });
     },
   });
 }

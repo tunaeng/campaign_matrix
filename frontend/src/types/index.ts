@@ -108,6 +108,31 @@ export interface Organization {
   updated_at?: string;
 }
 
+export interface ImportBatch {
+  id: number;
+  entity_type: 'organizations' | 'contacts';
+  entity_type_display: string;
+  file_name: string;
+  uploaded_by: number | null;
+  uploaded_by_name: string | null;
+  uploaded_at: string;
+  created_count: number;
+  updated_count: number;
+  skipped_count: number;
+  total_rows: number;
+  status: 'completed' | 'rolled_back';
+  status_display: string;
+  rolled_back_at: string | null;
+  can_rollback: boolean;
+}
+
+export interface ImportBatchRollbackResult {
+  deleted: number;
+  reverted: number;
+  skipped: number;
+  errors?: string[];
+}
+
 export interface OrganizationTag {
   id: number;
   name: string;
@@ -561,6 +586,7 @@ export interface Lead {
   demand_quota_declared?: number;
   demand_quota_list?: number;
   notes: string;
+  forwarded_from?: string | null;
   checklist_progress: { total: number; completed: number } | null;
   checklist_summary: { text: string; done: boolean }[];
   tasks_summary?: LeadTaskSummary[];
@@ -745,11 +771,14 @@ export interface WorkloadDashboardManager {
   campaigns: WorkloadDashboardManagerCampaign[];
 }
 
+export type TaskWorkflowStatus = 'backlog' | 'in_progress' | 'paused' | 'rejected' | 'done';
+
 export interface WorkloadDashboardTaskStats {
   total: number;
-  todo: number;
+  backlog: number;
   in_progress: number;
-  blocked: number;
+  paused: number;
+  rejected: number;
   done: number;
   overdue: number;
 }
@@ -789,7 +818,11 @@ export interface WorkloadDashboardChartsPoint {
   user_id?: number;
   user_name?: string;
   date?: string;
+  backlog?: number;
   in_progress?: number;
+  paused?: number;
+  rejected?: number;
+  done?: number;
   overdue?: number;
   done_in_period?: number;
   opened?: number;
@@ -871,6 +904,9 @@ export interface TaskTemplateStage {
   template: number;
   name: string;
   order: number;
+  is_work_stage: boolean;
+  is_active: boolean;
+  task_status: 'backlog' | 'in_progress' | 'paused' | 'rejected' | 'done';
   is_terminal: boolean;
   sla_days: number;
 }
@@ -883,6 +919,8 @@ export interface SubfunnelTemplate {
   owner_role: number | null;
   owner_role_name?: string | null;
   is_active: boolean;
+  auto_create_on_collect_import: boolean;
+  advance_lead_on_task_stage_forward: boolean;
   version: number;
   stages: TaskTemplateStage[];
   items: SubfunnelTemplateItem[];
@@ -903,6 +941,7 @@ export interface SubfunnelTemplateBinding {
   default_specialist: number | null;
   default_specialist_name?: string | null;
   is_active: boolean;
+  advance_lead_on_task_stage_forward?: boolean;
 }
 
 export interface CampaignSubfunnel {
@@ -941,7 +980,7 @@ export interface LeadTaskSummary {
   id: number;
   template_name: string;
   stage_name: string | null;
-  status: 'todo' | 'in_progress' | 'blocked' | 'done';
+  status: TaskWorkflowStatus | 'todo' | 'blocked';
   done: boolean;
   progress: { total: number; completed: number };
 }
@@ -960,7 +999,7 @@ export interface LeadSubfunnel {
   template_name: string;
   role_id: number | null;
   role_name?: string | null;
-  status: 'todo' | 'in_progress' | 'blocked' | 'done';
+  status: TaskWorkflowStatus | 'todo' | 'blocked';
   current_template_stage: number | null;
   current_template_stage_name?: string | null;
   current_template_stage_order?: number | null;
@@ -972,6 +1011,7 @@ export interface LeadSubfunnel {
   completed_at: string | null;
   is_available: boolean;
   checklist_values: LeadSubfunnelChecklistValue[];
+  forwarded_from?: string | null;
 }
 
 export interface SubfunnelWorkspaceItem {
@@ -980,6 +1020,7 @@ export interface SubfunnelWorkspaceItem {
   campaign_name: string;
   lead_id: number | null;
   lead_name: string;
+  forwarded_from?: string | null;
   is_region_task?: boolean;
   campaign_region_id?: number | null;
   region_id?: number | null;
@@ -991,14 +1032,18 @@ export interface SubfunnelWorkspaceItem {
   role_name: string | null;
   assignee_id: number | null;
   assignee_name: string | null;
-  status: 'todo' | 'in_progress' | 'blocked' | 'done';
+  status: TaskWorkflowStatus | 'todo' | 'blocked';
   current_template_stage_id?: number | null;
   current_template_stage_name?: string | null;
   current_template_stage_order?: number | null;
+  board_stage_key?: string;
   due_at: string | null;
   is_overdue: boolean;
   is_available: boolean;
   checklist_progress?: { total: number; completed: number };
+  checklist_summary?: { text: string; done: boolean }[];
+  show_capture_counts?: boolean;
+  capture_counts?: { organizations: number; contacts: number } | null;
 }
 
 export interface CampaignCollectStageImportResult {
@@ -1048,6 +1093,20 @@ export interface LeadSubfunnelBulkUpdateResult {
   skipped: Array<{ id: number; reason: string }>;
 }
 
+export interface LeadSubfunnelBulkChecklistResult {
+  updated_tasks: number;
+  updated_values: number;
+  requested: number;
+  skipped: Array<{ id: number; reason: string }>;
+}
+
+export interface BulkActionResult {
+  updated?: number;
+  deleted?: number;
+  requested: number;
+  skipped?: Array<{ id: number; reason: string }>;
+}
+
 export interface SubfunnelWorkspaceResponse {
   view_mode: 'kanban' | 'table';
   templates: Array<{
@@ -1057,9 +1116,11 @@ export interface SubfunnelWorkspaceResponse {
   }>;
   active_template_id: number | null;
   columns: Array<{
-    stage_id: number;
+    status: string;
+    stage_id?: number | null;
     stage_name: string;
     order: number;
+    is_work_stage?: boolean;
   }>;
   items_by_stage: Record<string, SubfunnelWorkspaceItem[]>;
   kanban: Array<{ status: string; stage_id?: number | null; stage_name?: string | null; items: SubfunnelWorkspaceItem[] }>;
@@ -1067,8 +1128,10 @@ export interface SubfunnelWorkspaceResponse {
   totals: {
     all: number;
     overdue: number;
-    todo: number;
+    backlog: number;
     in_progress: number;
+    paused: number;
+    rejected: number;
     done: number;
   };
 }

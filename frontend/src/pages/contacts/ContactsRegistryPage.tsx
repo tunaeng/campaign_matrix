@@ -26,6 +26,7 @@ import {
 } from '../../api/hooks';
 import EntityTagSelect, { renderTagChips } from '../../components/EntityTagSelect';
 import FieldChangeTimeline from '../../components/FieldChangeTimeline';
+import ImportHistoryPanel from '../../components/ImportHistoryPanel';
 import { getAxiosErrorMessage } from '../../api/errorMessage';
 import client from '../../api/client';
 import { formatPhoneWithExtension } from '../../utils/formatPhoneWithExtension';
@@ -61,6 +62,7 @@ export default function ContactsRegistryPage() {
   const [historyContact, setHistoryContact] = useState<Contact | null>(null);
   const [form] = Form.useForm();
   const [importOpen, setImportOpen] = useState(false);
+  const [importHistoryOpen, setImportHistoryOpen] = useState(false);
   const [importForm] = Form.useForm();
   const [importFiles, setImportFiles] = useState<UploadFile[]>([]);
 
@@ -221,6 +223,7 @@ export default function ContactsRegistryPage() {
         </Typography.Title>
         <Space>
           <Button onClick={openImport}>Импорт из Excel</Button>
+          <Button onClick={() => setImportHistoryOpen(true)}>Загруженные файлы</Button>
           <Button type="primary" onClick={openCreate}>
             Добавить контакт
           </Button>
@@ -285,9 +288,15 @@ export default function ContactsRegistryPage() {
         />
       </Space>
 
+      {total > 0 && (
+        <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+          Показано {rows.length} из {total} контактов
+        </Typography.Text>
+      )}
+
       <Table<Contact>
         rowKey="id"
-        loading={contactsQuery.isLoading}
+        loading={contactsQuery.isLoading || contactsQuery.isFetching}
         dataSource={rows}
         pagination={{
           current: page,
@@ -295,11 +304,18 @@ export default function ContactsRegistryPage() {
           total,
           showSizeChanger: true,
           pageSizeOptions: [25, 50, 100],
+          showTotal: (t, range) => `${range[0]}-${range[1]} из ${t}`,
           onChange: (nextPage, nextSize) => {
-            setPage(nextPage);
-            if (nextSize !== pageSize) {
+            if (nextSize && nextSize !== pageSize) {
               setPageSize(nextSize);
+              setPage(1);
+              return;
             }
+            setPage(nextPage);
+          },
+          onShowSizeChange: (_, nextSize) => {
+            setPageSize(nextSize);
+            setPage(1);
           },
         }}
         columns={[
@@ -438,6 +454,16 @@ export default function ContactsRegistryPage() {
           items={changeLogQuery.data?.results || []}
           emptyText="По контакту пока нет записей аудита"
         />
+      </Modal>
+
+      <Modal
+        title="Загруженные файлы"
+        open={importHistoryOpen}
+        onCancel={() => setImportHistoryOpen(false)}
+        footer={null}
+        width={980}
+      >
+        <ImportHistoryPanel entityType="contacts" title="История импортов" />
       </Modal>
 
       <Modal

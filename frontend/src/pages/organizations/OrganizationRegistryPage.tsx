@@ -33,6 +33,7 @@ import { getAxiosErrorMessage } from '../../api/errorMessage';
 import type { Organization } from '../../types';
 import EntityTagSelect, { renderTagChips } from '../../components/EntityTagSelect';
 import FieldChangeTimeline from '../../components/FieldChangeTimeline';
+import ImportHistoryPanel from '../../components/ImportHistoryPanel';
 
 const ORG_TYPE_OPTIONS = [
   { value: 'roiv', label: 'РОИВ' },
@@ -69,6 +70,8 @@ export default function OrganizationRegistryPage() {
   const [project, setProject] = useState<number | undefined>();
   const [role, setRole] = useState<string | undefined>();
   const [tags, setTags] = useState<number[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [selectedRowKeys, setSelectedRowKeys] = useState<number[]>([]);
   const [editing, setEditing] = useState<Organization | null>(null);
   const [open, setOpen] = useState(false);
@@ -80,6 +83,7 @@ export default function OrganizationRegistryPage() {
   const [bulkTagForm] = Form.useForm<{ tagIds: number[] }>();
   const [bulkTypeForm] = Form.useForm<{ org_type: string }>();
   const [importOpen, setImportOpen] = useState(false);
+  const [importHistoryOpen, setImportHistoryOpen] = useState(false);
   const [importForm] = Form.useForm();
   const [importFiles, setImportFiles] = useState<UploadFile[]>([]);
   const [parentSearchOptions, setParentSearchOptions] = useState<{ value: number; label: string }[]>([]);
@@ -89,16 +93,22 @@ export default function OrganizationRegistryPage() {
 
   const params = useMemo(
     () => ({
+      page,
+      page_size: pageSize,
       search: search || undefined,
       org_type: orgTypeFilter || undefined,
       project,
       role,
       tags: tags.length ? tags.join(',') : undefined,
     }),
-    [search, orgTypeFilter, project, role, tags],
+    [page, pageSize, search, orgTypeFilter, project, role, tags],
   );
 
-  const { data, isLoading, refetch } = useOrganizations(params);
+  useEffect(() => {
+    setPage(1);
+  }, [search, orgTypeFilter, project, role, tags]);
+
+  const { data, isLoading, isFetching, refetch } = useOrganizations(params);
   const { data: tagsData } = useOrganizationTags({ page_size: 500, tag_type: 'organizations' });
   const { data: regionsData } = useRegions({ page_size: 500 });
   const { data: projectsData } = useProjects({ page_size: 500 });
@@ -489,6 +499,7 @@ export default function OrganizationRegistryPage() {
         </Typography.Title>
         <Space>
           <Button onClick={openImport}>Импорт из Excel</Button>
+          <Button onClick={() => setImportHistoryOpen(true)}>Загруженные файлы</Button>
           <Button type="primary" onClick={openCreate}>
             Добавить организацию
           </Button>
@@ -559,9 +570,7 @@ export default function OrganizationRegistryPage() {
               {bulkActionBusy && <Spin size="small" />}
               <Typography.Text strong>
                 Выбрано: {selectedRowKeys.length}
-                {totalCount > organizations.length
-                  ? ` (из ${organizations.length} загруженных при ~${totalCount} по фильтру)`
-                  : ''}
+                {totalCount > pageSize ? ` (всего по фильтру: ${totalCount})` : ''}
               </Typography.Text>
             </Space>
           }
@@ -603,15 +612,34 @@ export default function OrganizationRegistryPage() {
       )}
 
       <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
-        В списке до 500 строк по фильтру. В шапке таблицы можно выделить строки текущей страницы или все в списке. При
-        массовом действии смотрите индикатор загрузки в таблице и текст прогресса в уведомлении над страницей.
+        Показано {organizations.length} из {totalCount} по фильтру. В шапке таблицы можно выделить строки текущей
+        страницы. При массовом действии смотрите индикатор загрузки в таблице и текст прогресса в уведомлении.
       </Typography.Text>
 
       <Table
         rowKey="id"
-        loading={isLoading || bulkActionBusy}
+        loading={isLoading || isFetching || bulkActionBusy}
         dataSource={organizations}
-        pagination={{ pageSize: 25, showSizeChanger: true, pageSizeOptions: [25, 50, 100] }}
+        pagination={{
+          current: page,
+          pageSize,
+          total: totalCount,
+          showSizeChanger: true,
+          pageSizeOptions: [25, 50, 100],
+          showTotal: (t, range) => `${range[0]}-${range[1]} из ${t}`,
+          onChange: (nextPage, nextSize) => {
+            if (nextSize && nextSize !== pageSize) {
+              setPageSize(nextSize);
+              setPage(1);
+              return;
+            }
+            setPage(nextPage);
+          },
+          onShowSizeChange: (_, nextSize) => {
+            setPageSize(nextSize);
+            setPage(1);
+          },
+        }}
         rowSelection={{
           selectedRowKeys,
           onChange: (keys) => {
@@ -738,6 +766,16 @@ export default function OrganizationRegistryPage() {
       </Modal>
 
       <Modal
+        title="Загруженные файлы"
+        open={importHistoryOpen}
+        onCancel={() => setImportHistoryOpen(false)}
+        footer={null}
+        width={980}
+      >
+        <ImportHistoryPanel entityType="organizations" title="История импортов" />
+      </Modal>
+
+      <Modal
         title={`Добавить тег к ${selectedRowKeys.length} организациям`}
         open={bulkAddTagsOpen}
         onCancel={() => {
@@ -840,7 +878,7 @@ export default function OrganizationRegistryPage() {
             <EntityTagSelect availableTags={tagsData?.results} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="update_existing" valuePropName="checked">
-            <Checkbox>Обновлять найденные организации (по ИНН/названию)</Checkbox>
+            <Checkbox>Обновлять найденные организации (сначала по ИНН, затем по точному названию)</Checkbox>
           </Form.Item>
         </Form>
       </Modal>
