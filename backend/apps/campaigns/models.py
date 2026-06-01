@@ -543,10 +543,14 @@ class CampaignSubfunnel(models.Model):
 
 class LeadSubfunnel(models.Model):
     class Status(models.TextChoices):
-        TODO = "todo", "К выполнению"
+        BACKLOG = "backlog", "Бэклог"
         IN_PROGRESS = "in_progress", "В работе"
-        BLOCKED = "blocked", "Блокировано"
+        PAUSED = "paused", "Пауза"
+        REJECTED = "rejected", "Отказ"
         DONE = "done", "Готово"
+        # Устаревшие значения (миграция данных)
+        TODO = "todo", "К выполнению"
+        BLOCKED = "blocked", "Блокировано"
 
     campaign_subfunnel = models.ForeignKey(
         CampaignSubfunnel,
@@ -573,7 +577,7 @@ class LeadSubfunnel(models.Model):
     status = models.CharField(
         max_length=30,
         choices=Status.choices,
-        default=Status.TODO,
+        default=Status.BACKLOG,
         verbose_name="Статус",
     )
     current_template_stage = models.ForeignKey(
@@ -633,13 +637,36 @@ class LeadSubfunnel(models.Model):
         return f"{self.lead} — {self.campaign_subfunnel.template.name}"
 
     @staticmethod
+    def normalize_status(raw_status):
+        if raw_status in (
+            LeadSubfunnel.Status.BACKLOG,
+            LeadSubfunnel.Status.IN_PROGRESS,
+            LeadSubfunnel.Status.PAUSED,
+            LeadSubfunnel.Status.REJECTED,
+            LeadSubfunnel.Status.DONE,
+        ):
+            return raw_status
+        if raw_status == LeadSubfunnel.Status.TODO:
+            return LeadSubfunnel.Status.BACKLOG
+        if raw_status == LeadSubfunnel.Status.BLOCKED:
+            return LeadSubfunnel.Status.PAUSED
+        return LeadSubfunnel.Status.BACKLOG
+
+    @staticmethod
     def status_from_stage(stage):
         if not stage:
-            return LeadSubfunnel.Status.TODO
+            return LeadSubfunnel.Status.BACKLOG
+        stage_status = getattr(stage, "task_status", None)
+        if stage_status in {
+            LeadSubfunnel.Status.BACKLOG,
+            LeadSubfunnel.Status.IN_PROGRESS,
+            LeadSubfunnel.Status.PAUSED,
+            LeadSubfunnel.Status.REJECTED,
+            LeadSubfunnel.Status.DONE,
+        }:
+            return stage_status
         if stage.is_terminal:
             return LeadSubfunnel.Status.DONE
-        if stage.order <= 0:
-            return LeadSubfunnel.Status.TODO
         return LeadSubfunnel.Status.IN_PROGRESS
 
 

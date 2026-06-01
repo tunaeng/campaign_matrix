@@ -21,6 +21,7 @@ from .models import (
     LeadSubfunnel,
     LeadSubfunnelChecklistValue,
 )
+from .task_workflow import TASK_WORKFLOW_STATUS_VALUES
 from .db_compat import lead_table_has_quota_split_columns
 from apps.funnels.models import StageChecklistItem, FunnelStage
 from .serializers import (
@@ -35,7 +36,22 @@ from .serializers import (
     LeadSubfunnelSerializer,
     LeadSubfunnelChecklistValueSerializer,
 )
-from apps.funnels.models import TaskTemplateStage
+from apps.funnels.models import SubfunnelTemplateItem, TaskTemplateStage, SubfunnelTemplateBinding
+
+
+def _parse_bulk_ids(raw_ids):
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return None, Response(
+            {"detail": "Передайте непустой список ids."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        return [int(x) for x in raw_ids], None
+    except (TypeError, ValueError):
+        return None, Response(
+            {"detail": "ids должны быть числами."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
 
 def _normalize_cell(value):
@@ -112,18 +128,31 @@ def _build_leads_demand_import_column_map(header_values):
 def _empty_workload_task_stats():
     return {
         "total": 0,
-        "todo": 0,
+        "backlog": 0,
         "in_progress": 0,
-        "blocked": 0,
+        "paused": 0,
+        "rejected": 0,
         "done": 0,
         "overdue": 0,
     }
 
 
+def _empty_activity_by_period_bucket():
+    return {
+        "date": None,
+        "backlog": 0,
+        "in_progress": 0,
+        "paused": 0,
+        "rejected": 0,
+        "done": 0,
+    }
+
+
 def _bump_workload_task_stats(stats, status, is_overdue):
     stats["total"] += 1
-    if status in stats:
-        stats[status] += 1
+    normalized = LeadSubfunnel.normalize_status(status)
+    if normalized in stats:
+        stats[normalized] += 1
     if is_overdue:
         stats["overdue"] += 1
 
@@ -141,6 +170,17 @@ def _log_lead_activity(lead, user, event_type, summary):
     except (OperationalError, ProgrammingError):
         # Таблица ещё не создана (миграции не применены) — не блокируем основное действие
         pass
+
+
+def _extract_forwarded_from_notes(notes):
+    first_line = ((notes or "").splitlines() or [""])[0].strip()
+    prefix = "Передано от организации:"
+    if not first_line.startswith(prefix):
+        return None
+    value = first_line[len(prefix):].strip()
+    if ". Комментарий:" in value:
+        value = value.split(". Комментарий:", 1)[0].strip()
+    return value or None
 
 
 def _append_synthetic_checklist_from_values(lead, items):
@@ -278,8 +318,16 @@ def _run_registry_import_xlsx(viewset_cls, request, raw: bytes, filename: str, e
     return view(req)
 
 
-def _link_orgs_to_collect_campaign(campaign, organization_ids, errors, campaign_region_id=None):
-    from apps.organizations.models import Organization
+def _link_orgs_to_collect_campaign(
+    campaign,
+    organization_ids,
+    errors,
+    campaign_region_id=None,
+    organization_contact_map=None,
+    source_lead_id=None,
+    source_transfer_comment="",
+):
+    from apps.organizations.models import Contact, Organization
 
     from .collect_tasks import get_entry_funnel_stage_for_lead
 
@@ -290,14 +338,11 @@ def _link_orgs_to_collect_campaign(campaign, organization_ids, errors, campaign_
             errors.append("Выбранный регион задачи не принадлежит кампании.")
             return {"leads_created": 0, "leads_by_region": {}, "linked_ids": []}
     campaign_regions = {cr.region_id: cr for cr in campaign_regions_qs}
-    if not campaign_regions:
-        errors.append("В кампании не настроены регионы отбора.")
-        return {"leads_created": 0, "leads_by_region": {}, "linked_ids": []}
 
     funnel_link = campaign.campaign_funnels.select_related("funnel").first()
     if not funnel_link:
         errors.append("У кампании не выбрана воронка.")
-        return 0
+        return {"leads_created": 0, "leads_by_region": {}, "linked_ids": []}
 
     funnel = funnel_link.funnel
     entry_stage = get_entry_funnel_stage_for_lead(funnel)
@@ -306,17 +351,38 @@ def _link_orgs_to_collect_campaign(campaign, organization_ids, errors, campaign_
     skipped_wrong_region = 0
     leads_by_region = defaultdict(int)
     linked_ids = set()
+    source_org_name = None
+    source_lead_defaults = None
+    source_transfer_comment = (source_transfer_comment or "").strip()
+    if source_lead_id:
+        source_lead = (
+            Lead.objects.select_related("organization", "queue")
+            .filter(id=source_lead_id, campaign=campaign)
+            .only(
+                "id",
+                "organization__name",
+                "queue_id",
+                "manager_id",
+                "primary_contact_specialist_id",
+            )
+            .first()
+        )
+        if source_lead and source_lead.organization_id and source_lead.organization:
+            source_org_name = source_lead.organization.name
+            source_lead_defaults = source_lead
+        else:
+            errors.append("Лид-источник для передачи не найден в этой кампании.")
 
     for org_id in organization_ids:
         try:
             org = Organization.objects.get(id=org_id)
         except Organization.DoesNotExist:
             continue
-        if org.region_id not in campaign_regions:
+        if campaign_regions and org.region_id not in campaign_regions:
             skipped_wrong_region += 1
             continue
-        cr = campaign_regions[org.region_id]
-        queue = cr.queue or first_queue
+        cr = campaign_regions.get(org.region_id)
+        queue = (cr.queue if cr else None) or (source_lead_defaults.queue if source_lead_defaults else None) or first_queue
         lead, created = Lead.objects.get_or_create(
             campaign=campaign,
             organization_id=org.id,
@@ -324,8 +390,11 @@ def _link_orgs_to_collect_campaign(campaign, organization_ids, errors, campaign_
             region_id=org.region_id,
             defaults={
                 "queue": queue,
-                "manager_id": cr.manager_id,
-                "primary_contact_specialist_id": cr.primary_contact_specialist_id,
+                "manager_id": (cr.manager_id if cr else None) or (source_lead_defaults.manager_id if source_lead_defaults else None),
+                "primary_contact_specialist_id": (
+                    (cr.primary_contact_specialist_id if cr else None)
+                    or (source_lead_defaults.primary_contact_specialist_id if source_lead_defaults else None)
+                ),
             },
         )
         update_fields = []
@@ -341,8 +410,33 @@ def _link_orgs_to_collect_campaign(campaign, organization_ids, errors, campaign_
             update_fields.append("primary_contact_specialist")
         if update_fields:
             lead.save(update_fields=update_fields + ["updated_at"])
+        selected_contact_id = None
+        if organization_contact_map:
+            selected_contact_id = organization_contact_map.get(org.id)
+        if selected_contact_id:
+            contact = (
+                Contact.objects.filter(id=selected_contact_id, organization_id=org.id)
+                .only("id")
+                .first()
+            )
+            if contact:
+                if lead.primary_contact_id != contact.id:
+                    lead.primary_contact_id = contact.id
+                    lead.save(update_fields=["primary_contact", "updated_at"])
+            else:
+                errors.append(
+                    f"Контакт {selected_contact_id} не найден в организации {org.name}."
+                )
         CampaignOrganization.objects.get_or_create(campaign=campaign, organization_id=org.id)
-        CampaignCreateSerializer._materialize_lead_subfunnels(lead)
+        if source_org_name:
+            transfer_note = f"Передано от организации: {source_org_name}"
+            if source_transfer_comment:
+                transfer_note = f"{transfer_note}. Комментарий: {source_transfer_comment}"
+            current_notes = (lead.notes or "").strip()
+            if not current_notes.startswith(transfer_note):
+                lead.notes = f"{transfer_note}\n{current_notes}".strip() if current_notes else transfer_note
+                lead.save(update_fields=["notes", "updated_at"])
+        CampaignCreateSerializer._materialize_lead_subfunnels(lead, source="collect_import")
         if created:
             leads_created += 1
             leads_by_region[org.region_id] += 1
@@ -367,7 +461,10 @@ class OrganizationListCaptureContactSerializer(serializers.Serializer):
     department_name = serializers.CharField(required=False, allow_blank=True, default="")
     position = serializers.CharField(required=False, allow_blank=True, default="")
     phone = serializers.CharField(required=False, allow_blank=True, default="")
+    phone_extension = serializers.CharField(required=False, allow_blank=True, default="")
     email = serializers.CharField(required=False, allow_blank=True, default="")
+    messenger = serializers.CharField(required=False, allow_blank=True, default="")
+    is_manager = serializers.BooleanField(required=False, default=False)
     comment = serializers.CharField(required=False, allow_blank=True, default="")
 
 
@@ -377,6 +474,7 @@ class OrganizationListCaptureOrganizationSerializer(serializers.Serializer):
     inn = serializers.CharField(required=False, allow_blank=True, allow_null=True, default="")
     region_id = serializers.IntegerField(required=False, allow_null=True, default=None)
     org_type = serializers.CharField(required=False, allow_blank=True, default="other")
+    parent_organization_id = serializers.IntegerField(required=False, allow_null=True, default=None)
 
 
 class OrganizationListCaptureItemSerializer(serializers.Serializer):
@@ -387,6 +485,8 @@ class OrganizationListCaptureItemSerializer(serializers.Serializer):
 class OrganizationListCaptureRequestSerializer(serializers.Serializer):
     mode = serializers.ChoiceField(choices=["minimal", "full"], required=False, default="minimal")
     campaign_region_id = serializers.IntegerField(required=False, allow_null=True)
+    source_lead_id = serializers.IntegerField(required=False, allow_null=True)
+    source_transfer_comment = serializers.CharField(required=False, allow_blank=True, default="")
     items = OrganizationListCaptureItemSerializer(many=True, allow_empty=False)
 
 
@@ -544,7 +644,11 @@ class CampaignViewSet(viewsets.ModelViewSet):
         from apps.organizations.views import ContactViewSet, OrganizationViewSet
 
         campaign = self.get_object()
-        if campaign.operational_stage != Campaign.OperationalStage.ORGANIZATION_LIST:
+        force_task_addition = str(request.data.get("force_task_addition", "")).lower() in {"1", "true", "yes", "on"}
+        if (
+            campaign.operational_stage != Campaign.OperationalStage.ORGANIZATION_LIST
+            and not force_task_addition
+        ):
             return Response(
                 {"detail": "Импорт доступен только на стадии кампании «Формирование перечня организаций»."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -561,6 +665,18 @@ class CampaignViewSet(viewsets.ModelViewSet):
                 )
         else:
             campaign_region_id = None
+        source_lead_id = request.data.get("source_lead_id")
+        if source_lead_id not in (None, ""):
+            try:
+                source_lead_id = int(source_lead_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "source_lead_id должен быть числом."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            source_lead_id = None
+        source_transfer_comment = (request.data.get("source_transfer_comment") or "").strip()
 
         org_file = request.FILES.get("organizations_file") or request.FILES.get("file")
         contacts_file = request.FILES.get("contacts_file")
@@ -626,6 +742,8 @@ class CampaignViewSet(viewsets.ModelViewSet):
             organization_ids,
             errors,
             campaign_region_id=campaign_region_id,
+            source_lead_id=source_lead_id,
+            source_transfer_comment=source_transfer_comment,
         )
 
         payload = {
@@ -640,12 +758,109 @@ class CampaignViewSet(viewsets.ModelViewSet):
             payload["contacts_import"] = contact_import.data
         return Response(payload)
 
+    @action(detail=True, methods=["post"], url_path="organization-list-select")
+    def organization_list_select(self, request, pk=None):
+        """Выбор организаций/контактов из базы для региональной задачи."""
+        campaign = self.get_object()
+        force_task_addition = str(request.data.get("force_task_addition", "")).lower() in {"1", "true", "yes", "on"}
+        if (
+            campaign.operational_stage != Campaign.OperationalStage.ORGANIZATION_LIST
+            and not force_task_addition
+        ):
+            return Response(
+                {"detail": "Добавление доступно только на стадии «Формирование перечня организаций»."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        campaign_region_id = request.data.get("campaign_region_id")
+        if campaign_region_id not in (None, ""):
+            try:
+                campaign_region_id = int(campaign_region_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "campaign_region_id должен быть числом."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            campaign_region_id = None
+        source_lead_id = request.data.get("source_lead_id")
+        if source_lead_id not in (None, ""):
+            try:
+                source_lead_id = int(source_lead_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "source_lead_id должен быть числом."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            source_lead_id = None
+        source_transfer_comment = (request.data.get("source_transfer_comment") or "").strip()
+
+        raw_items = request.data.get("items")
+        if not isinstance(raw_items, list) or not raw_items:
+            return Response(
+                {"detail": "Передайте непустой список items."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        organization_ids = []
+        organization_contact_map = {}
+        for idx, item in enumerate(raw_items, start=1):
+            if not isinstance(item, dict):
+                return Response(
+                    {"detail": f"items[{idx}] должен быть объектом."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            org_id_raw = item.get("organization_id")
+            if not org_id_raw or not str(org_id_raw).isdigit():
+                return Response(
+                    {"detail": f"items[{idx}].organization_id должен быть числом."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            org_id = int(org_id_raw)
+            organization_ids.append(org_id)
+
+            contact_id_raw = item.get("contact_id")
+            if contact_id_raw in (None, ""):
+                continue
+            if not str(contact_id_raw).isdigit():
+                return Response(
+                    {"detail": f"items[{idx}].contact_id должен быть числом."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            organization_contact_map[org_id] = int(contact_id_raw)
+
+        errors = []
+        deduped_org_ids = list(dict.fromkeys(organization_ids))
+        link_result = _link_orgs_to_collect_campaign(
+            campaign,
+            deduped_org_ids,
+            errors,
+            campaign_region_id=campaign_region_id,
+            organization_contact_map=organization_contact_map,
+            source_lead_id=source_lead_id,
+            source_transfer_comment=source_transfer_comment,
+        )
+
+        return Response(
+            {
+                "leads_created": link_result["leads_created"],
+                "organizations_linked": len(link_result["linked_ids"]),
+                "leads_by_region": link_result["leads_by_region"],
+                "errors": errors,
+            }
+        )
+
     @action(detail=True, methods=["post"], url_path="organization-list-capture")
     def organization_list_capture(self, request, pk=None):
         from apps.organizations.models import Contact, Organization
 
         campaign = self.get_object()
-        if campaign.operational_stage != Campaign.OperationalStage.ORGANIZATION_LIST:
+        force_task_addition = str(request.data.get("force_task_addition", "")).lower() in {"1", "true", "yes", "on"}
+        if (
+            campaign.operational_stage != Campaign.OperationalStage.ORGANIZATION_LIST
+            and not force_task_addition
+        ):
             return Response(
                 {"detail": "Добавление доступно только на стадии «Формирование перечня организаций»."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -655,6 +870,8 @@ class CampaignViewSet(viewsets.ModelViewSet):
         req.is_valid(raise_exception=True)
         payload = req.validated_data
         campaign_region_id = payload.get("campaign_region_id")
+        source_lead_id = payload.get("source_lead_id")
+        source_transfer_comment = (payload.get("source_transfer_comment") or "").strip()
 
         results = []
         errors = []
@@ -666,7 +883,14 @@ class CampaignViewSet(viewsets.ModelViewSet):
             contact_data = item.get("contact")
 
             try:
+                org_type = org_data.get("org_type") or "other"
+                parent_organization_id = org_data.get("parent_organization_id")
+                if org_type == "company_branch" and not parent_organization_id:
+                    raise ValueError("Для подразделения укажите головную организацию.")
+
                 inn = (org_data.get("inn") or "").strip()
+                if org_type == "company_branch":
+                    inn = ""
                 region_id = org_data.get("region_id")
                 org = None
                 if inn:
@@ -678,13 +902,16 @@ class CampaignViewSet(viewsets.ModelViewSet):
                     ).first()
 
                 if org is None:
-                    org = Organization.objects.create(
-                        name=org_data["name"].strip(),
-                        short_name=(org_data.get("short_name") or org_data["name"]).strip()[:200],
-                        inn=inn or None,
-                        region_id=region_id,
-                        org_type=org_data.get("org_type") or "other",
-                    )
+                    create_kwargs = {
+                        "name": org_data["name"].strip(),
+                        "short_name": (org_data.get("short_name") or org_data["name"]).strip()[:200],
+                        "inn": inn or None,
+                        "region_id": region_id,
+                        "org_type": org_type,
+                    }
+                    if parent_organization_id:
+                        create_kwargs["parent_organization_id"] = parent_organization_id
+                    org = Organization.objects.create(**create_kwargs)
 
                 contact = None
                 if contact_data:
@@ -700,7 +927,10 @@ class CampaignViewSet(viewsets.ModelViewSet):
                         department_name=(contact_data.get("department_name") or "").strip(),
                         position=(contact_data.get("position") or "").strip(),
                         phone=(contact_data.get("phone") or "").strip(),
+                        phone_extension=(contact_data.get("phone_extension") or "").strip(),
                         email=(contact_data.get("email") or "").strip(),
+                        messenger=(contact_data.get("messenger") or "").strip(),
+                        is_manager=bool(contact_data.get("is_manager")),
                         comment=(contact_data.get("comment") or "").strip(),
                     )
 
@@ -710,6 +940,8 @@ class CampaignViewSet(viewsets.ModelViewSet):
                     [org.id],
                     link_errors,
                     campaign_region_id=campaign_region_id,
+                    source_lead_id=source_lead_id,
+                    source_transfer_comment=source_transfer_comment,
                 )
                 if link_errors:
                     skipped_count += 1
@@ -785,7 +1017,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
             "campaign_subfunnel__role",
             "current_template_stage",
             "assignee",
-        ).prefetch_related("checklist_values")
+        ).prefetch_related("checklist_values__template_item")
         if campaign_id and str(campaign_id).isdigit():
             cid = int(campaign_id)
             rows = rows.filter(
@@ -825,29 +1057,93 @@ class CampaignViewSet(viewsets.ModelViewSet):
             active_template_id = template_tabs[0]["id"]
         if active_template_id is not None:
             rows = rows.filter(campaign_subfunnel__template_id=active_template_id)
-        if status_filter and str(status_filter).isdigit():
-            rows = rows.filter(current_template_stage_id=int(status_filter))
+        if status_filter:
+            status_filter_str = str(status_filter)
+            if status_filter_str in TASK_WORKFLOW_STATUS_VALUES:
+                rows = rows.filter(status=status_filter_str)
+            elif status_filter_str.startswith("stage-"):
+                stage_tail = status_filter_str.removeprefix("stage-")
+                if stage_tail == "unassigned":
+                    rows = rows.filter(current_template_stage_id__isnull=True)
+                elif stage_tail.isdigit():
+                    rows = rows.filter(current_template_stage_id=int(stage_tail))
+            elif status_filter_str.isdigit():
+                rows = rows.filter(current_template_stage_id=int(status_filter_str))
 
-        columns = []
-        if active_template_id:
-            stages = TaskTemplateStage.objects.filter(
-                template_id=active_template_id
-            ).order_by("order", "id")
-            columns = [
-                {
-                    "stage_id": stage.id,
-                    "stage_name": stage.name,
-                    "order": stage.order,
+        capture_counts_by_region = {}
+        region_rows = list(
+            rows.filter(
+                campaign_region_id__isnull=False,
+                campaign_subfunnel__template__auto_create_on_collect_import=True,
+            )
+            .values(
+                "campaign_region_id",
+                "campaign_region__campaign_id",
+                "campaign_region__region_id",
+            )
+            .distinct()
+        )
+        region_pairs = {
+            (r["campaign_region__campaign_id"], r["campaign_region__region_id"])
+            for r in region_rows
+            if r["campaign_region__campaign_id"] and r["campaign_region__region_id"]
+        }
+        if region_pairs:
+            pairs_query = Q()
+            for campaign_id_value, region_id_value in region_pairs:
+                pairs_query |= Q(campaign_id=campaign_id_value, region_id=region_id_value)
+            lead_counts = Lead.objects.filter(pairs_query).values("campaign_id", "region_id").annotate(
+                organizations_count=Count("organization_id", distinct=True),
+                contacts_count=Count("primary_contact_id", filter=Q(primary_contact_id__isnull=False), distinct=True),
+            )
+            counts_by_pair = {
+                (it["campaign_id"], it["region_id"]): {
+                    "organizations": it["organizations_count"],
+                    "contacts": it["contacts_count"],
                 }
-                for stage in stages
-            ]
+                for it in lead_counts
+            }
+            capture_counts_by_region = {
+                r["campaign_region_id"]: counts_by_pair.get(
+                    (r["campaign_region__campaign_id"], r["campaign_region__region_id"]),
+                    {"organizations": 0, "contacts": 0},
+                )
+                for r in region_rows
+            }
+
+        stages = []
+        if active_template_id is not None:
+            stages = list(
+                TaskTemplateStage.objects.filter(
+                    template_id=active_template_id,
+                    is_active=True,
+                ).order_by("order", "id")
+            )
+        columns = [
+            {
+                "status": f"stage-{stage.id}",
+                "stage_id": stage.id,
+                "stage_name": stage.name,
+                "order": stage.order,
+                "is_work_stage": bool(stage.is_work_stage),
+            }
+            for stage in stages
+        ]
+        active_stage_ids = {col["stage_id"] for col in columns}
 
         payload = []
         now = timezone.now()
         for row in rows:
-            checklist_values = list(row.checklist_values.all())
+            checklist_values = sorted(
+                row.checklist_values.all(),
+                key=lambda v: (v.template_item.order, v.id),
+            )
             checklist_total = len(checklist_values)
             checklist_completed = sum(1 for v in checklist_values if v.is_completed)
+            checklist_summary = [
+                {"text": v.template_item.title, "done": v.is_completed}
+                for v in checklist_values
+            ]
             is_region_task = bool(row.campaign_region_id)
             if is_region_task:
                 campaign_obj = row.campaign_region.campaign
@@ -865,12 +1161,21 @@ class CampaignViewSet(viewsets.ModelViewSet):
                     else (f"Лид {row.lead_id}" if row.lead_id else "—")
                 )
                 stage_name = row.lead.current_stage.name if row.lead and row.lead.current_stage else None
+            show_capture_counts = bool(
+                is_region_task
+                and row.campaign_subfunnel.template.auto_create_on_collect_import
+            )
             payload.append({
                 "id": row.id,
                 "campaign_id": campaign_obj.id if campaign_obj else None,
                 "campaign_name": campaign_obj.name if campaign_obj else None,
                 "lead_id": row.lead_id,
                 "lead_name": lead_name,
+                "forwarded_from": (
+                    _extract_forwarded_from_notes(row.lead.notes)
+                    if row.lead_id and row.lead
+                    else None
+                ),
                 "is_region_task": is_region_task,
                 "campaign_region_id": row.campaign_region_id,
                 "region_id": row.campaign_region.region_id if row.campaign_region_id else None,
@@ -882,10 +1187,15 @@ class CampaignViewSet(viewsets.ModelViewSet):
                 "role_name": row.campaign_subfunnel.role.name if row.campaign_subfunnel.role else None,
                 "assignee_id": row.assignee_id,
                 "assignee_name": str(row.assignee) if row.assignee else None,
-                "status": row.status,
+                "status": LeadSubfunnel.normalize_status(row.status),
                 "current_template_stage_id": row.current_template_stage_id,
                 "current_template_stage_name": row.current_template_stage.name if row.current_template_stage else None,
                 "current_template_stage_order": row.current_template_stage.order if row.current_template_stage else None,
+                "board_stage_key": (
+                    f"stage-{row.current_template_stage_id}"
+                    if row.current_template_stage_id in active_stage_ids
+                    else "stage-unassigned"
+                ),
                 "due_at": row.due_at.isoformat() if row.due_at else None,
                 "is_overdue": bool(row.due_at and row.due_at < now and row.status != LeadSubfunnel.Status.DONE),
                 "is_available": row.is_available,
@@ -893,22 +1203,44 @@ class CampaignViewSet(viewsets.ModelViewSet):
                     "total": checklist_total,
                     "completed": checklist_completed,
                 },
+                "checklist_summary": checklist_summary,
+                "show_capture_counts": show_capture_counts,
+                "capture_counts": (
+                    capture_counts_by_region.get(
+                        row.campaign_region_id,
+                        {"organizations": 0, "contacts": 0},
+                    )
+                    if show_capture_counts
+                    else None
+                ),
             })
 
         kanban_map = defaultdict(list)
         for item in payload:
-            stage_id = item.get("current_template_stage_id")
-            if stage_id is not None:
-                kanban_map[stage_id].append(item)
+            workflow_status = LeadSubfunnel.normalize_status(item.get("status"))
+            item["status"] = workflow_status
+            kanban_map[item["board_stage_key"]].append(item)
 
-        items_by_stage = {str(stage_id): items for stage_id, items in kanban_map.items()}
+        if kanban_map.get("stage-unassigned"):
+            columns.append(
+                {
+                    "status": "stage-unassigned",
+                    "stage_id": None,
+                    "stage_name": "Без этапа",
+                    "order": 10_000,
+                    "is_work_stage": False,
+                }
+            )
+
+        items_by_stage = {status: items for status, items in kanban_map.items()}
         kanban = []
         for col in columns:
-            items = kanban_map.get(col["stage_id"], [])
+            col_status = col["status"]
+            items = kanban_map.get(col_status, [])
             kanban.append(
                 {
-                    "status": str(col["stage_id"]),
-                    "stage_id": col["stage_id"],
+                    "status": col_status,
+                    "stage_id": col.get("stage_id"),
                     "stage_name": col["stage_name"],
                     "items": items,
                 }
@@ -925,8 +1257,10 @@ class CampaignViewSet(viewsets.ModelViewSet):
             "totals": {
                 "all": len(payload),
                 "overdue": sum(1 for i in payload if i["is_overdue"]),
-                "todo": sum(1 for i in payload if i["status"] == LeadSubfunnel.Status.TODO),
+                "backlog": sum(1 for i in payload if LeadSubfunnel.normalize_status(i["status"]) == LeadSubfunnel.Status.BACKLOG),
                 "in_progress": sum(1 for i in payload if i["status"] == LeadSubfunnel.Status.IN_PROGRESS),
+                "paused": sum(1 for i in payload if i["status"] == LeadSubfunnel.Status.PAUSED),
+                "rejected": sum(1 for i in payload if i["status"] == LeadSubfunnel.Status.REJECTED),
                 "done": sum(1 for i in payload if i["status"] == LeadSubfunnel.Status.DONE),
             },
         })
@@ -1206,6 +1540,25 @@ class CampaignViewSet(viewsets.ModelViewSet):
         today = timezone.localdate()
         now = timezone.now()
 
+        def _bump_activity_status(activity_map, date_obj, status):
+            if not date_obj:
+                return
+            if has_period and not _date_in_range(date_obj):
+                return
+            normalized = LeadSubfunnel.normalize_status(status)
+            if normalized not in {
+                LeadSubfunnel.Status.BACKLOG,
+                LeadSubfunnel.Status.IN_PROGRESS,
+                LeadSubfunnel.Status.PAUSED,
+                LeadSubfunnel.Status.REJECTED,
+                LeadSubfunnel.Status.DONE,
+            }:
+                return
+            key = date_obj.isoformat()
+            bucket = activity_map[key]
+            bucket["date"] = key
+            bucket[normalized] += 1
+
         bucket = defaultdict(
             lambda: {
                 "user_id": None,
@@ -1250,6 +1603,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
                 "campaigns": defaultdict(_specialist_campaign_bucket),
             }
         )
+        activity_by_period = defaultdict(_empty_activity_by_period_bucket)
         chart_data = {
             "manager": {
                 "by_campaign": defaultdict(
@@ -1368,16 +1722,6 @@ class CampaignViewSet(viewsets.ModelViewSet):
                     mgr_chart_user["in_progress"] += 1
                     mgr_chart_user["overdue"] += 1 if stage_overdue else 0
                     chart_data["manager"]["status_pie"]["overdue" if stage_overdue else "in_progress"] += 1
-                    if has_period:
-                        updated_d = timezone.localtime(lead.updated_at).date()
-                        if _date_in_range(updated_d):
-                            mgr_day = chart_data["manager"]["by_day"][updated_d.isoformat()]
-                            mgr_day["date"] = updated_d.isoformat()
-                            mgr_day["opened"] += 1
-                        if stage_overdue and stage_deadline and _date_in_range(stage_deadline):
-                            mgr_deadline_day = chart_data["manager"]["by_day"][stage_deadline.isoformat()]
-                            mgr_deadline_day["date"] = stage_deadline.isoformat()
-                            mgr_deadline_day["overdue"] += 1
 
             if role in ("all", "specialist"):
                 lead_specialist = (
@@ -1432,6 +1776,19 @@ class CampaignViewSet(viewsets.ModelViewSet):
             if not campaign_obj:
                 continue
 
+            activity_dt = (
+                task.completed_at
+                if is_done and task.completed_at
+                else (task.updated_at or task.started_at or task.created_at)
+            )
+            if activity_dt:
+                activity_status = LeadSubfunnel.Status.DONE if is_done else task.status
+                _bump_activity_status(
+                    activity_by_period,
+                    timezone.localtime(activity_dt).date(),
+                    activity_status,
+                )
+
             if has_period:
                 task_active = (
                     _dt_in_range(task.updated_at)
@@ -1480,23 +1837,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
                 if not is_done:
                     sp_chart_user["in_progress"] += 1
                     sp_chart_user["overdue"] += 1 if is_overdue else 0
-                chart_data["specialist"]["status_pie"][task.status] += 1
-                if has_period:
-                    if _dt_in_range(task.started_at):
-                        d = timezone.localtime(task.started_at).date().isoformat()
-                        day = chart_data["specialist"]["by_day"][d]
-                        day["date"] = d
-                        day["opened"] += 1
-                    if _dt_in_range(task.completed_at):
-                        d = timezone.localtime(task.completed_at).date().isoformat()
-                        day = chart_data["specialist"]["by_day"][d]
-                        day["date"] = d
-                        day["completed"] += 1
-                    if is_overdue and task.due_at and _date_in_range(timezone.localtime(task.due_at).date()):
-                        d = timezone.localtime(task.due_at).date().isoformat()
-                        day = chart_data["specialist"]["by_day"][d]
-                        day["date"] = d
-                        day["overdue"] += 1
+                chart_data["specialist"]["status_pie"][LeadSubfunnel.normalize_status(task.status)] += 1
 
         rows = sorted(
             bucket.values(),
@@ -1568,7 +1909,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
             "scope": active_chart_scope,
             "by_campaign": sorted(charts_source["by_campaign"].values(), key=lambda x: x["campaign_name"] or ""),
             "by_user": sorted(charts_source["by_user"].values(), key=lambda x: x["user_name"] or ""),
-            "by_day": sorted(charts_source["by_day"].values(), key=lambda x: x["date"] or ""),
+            "by_day": sorted(activity_by_period.values(), key=lambda x: x["date"] or ""),
             "status_pie": [{"status": status_key, "count": count} for status_key, count in charts_source["status_pie"].items()],
         }
 
@@ -1590,6 +1931,63 @@ class CampaignViewSet(viewsets.ModelViewSet):
                 },
             }
         )
+
+    @action(detail=False, methods=["post"], url_path="bulk-update")
+    def bulk_update(self, request):
+        id_list, err = _parse_bulk_ids(request.data.get("ids"))
+        if err:
+            return err
+
+        board_column = request.data.get("board_column")
+        status_val = request.data.get("status")
+        if board_column is None and status_val is None:
+            return Response(
+                {"detail": "Укажите board_column или status."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        valid_statuses = {choice[0] for choice in Campaign.Status.choices}
+        valid_columns = set(valid_statuses) | {Campaign.OperationalStage.ORGANIZATION_LIST}
+
+        update_fields_base = ["updated_at"]
+        rows = list(self.get_queryset().filter(id__in=id_list))
+        updated = 0
+        skipped = []
+
+        for row in rows:
+            fields = list(update_fields_base)
+            if board_column is not None:
+                col = str(board_column)
+                if col not in valid_columns:
+                    skipped.append({"id": row.id, "reason": "Неизвестная стадия доски."})
+                    continue
+                if col == Campaign.OperationalStage.ORGANIZATION_LIST:
+                    row.status = Campaign.Status.ACTIVE
+                    row.operational_stage = Campaign.OperationalStage.ORGANIZATION_LIST
+                    fields.extend(["status", "operational_stage"])
+                else:
+                    row.status = col
+                    row.operational_stage = ""
+                    fields.extend(["status", "operational_stage"])
+            elif status_val is not None:
+                st = str(status_val)
+                if st not in valid_statuses:
+                    skipped.append({"id": row.id, "reason": "Неизвестный статус."})
+                    continue
+                row.status = st
+                fields.append("status")
+            row.save(update_fields=list(dict.fromkeys(fields)))
+            updated += 1
+
+        return Response({"updated": updated, "skipped": skipped, "requested": len(id_list)})
+
+    @action(detail=False, methods=["post"], url_path="bulk-delete")
+    def bulk_delete(self, request):
+        id_list, err = _parse_bulk_ids(request.data.get("ids"))
+        if err:
+            return err
+        deleted, _ = Campaign.objects.filter(id__in=id_list).delete()
+        return Response({"deleted": deleted, "requested": len(id_list)})
 
 
 class CampaignQueueViewSet(viewsets.ModelViewSet):
@@ -1990,6 +2388,58 @@ class LeadViewSet(viewsets.ModelViewSet):
         )
         return Response(LeadDetailSerializer(lead).data)
 
+    @action(detail=False, methods=["post"], url_path="bulk-update")
+    def bulk_update(self, request):
+        id_list, err = _parse_bulk_ids(request.data.get("ids"))
+        if err:
+            return err
+        if "current_stage" not in request.data:
+            return Response(
+                {"detail": "Укажите current_stage."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        stage_raw = request.data.get("current_stage")
+        target_stage = None
+        if stage_raw not in (None, ""):
+            if not str(stage_raw).isdigit():
+                return Response({"detail": "Некорректный current_stage."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                target_stage = FunnelStage.objects.get(id=int(stage_raw))
+            except FunnelStage.DoesNotExist:
+                return Response({"detail": "Стадия не найдена."}, status=status.HTTP_404_NOT_FOUND)
+
+        rows = list(self.get_queryset().filter(id__in=id_list))
+        updated = 0
+        skipped = []
+
+        for row in rows:
+            if target_stage is not None and row.funnel_id != target_stage.funnel_id:
+                skipped.append({"id": row.id, "reason": "Стадия не принадлежит воронке лида."})
+                continue
+            row.current_stage = target_stage
+            row.save(update_fields=["current_stage", "updated_at"])
+            if target_stage is not None:
+                if (
+                    not row.primary_contact_specialist_id
+                    and target_stage.primary_contact_specialist_id
+                ):
+                    row.primary_contact_specialist_id = target_stage.primary_contact_specialist_id
+                    row.save(update_fields=["primary_contact_specialist", "updated_at"])
+                self._ensure_checklist_values(row, target_stage)
+                self._refresh_subfunnel_availability(row)
+            updated += 1
+
+        return Response({"updated": updated, "skipped": skipped, "requested": len(id_list)})
+
+    @action(detail=False, methods=["post"], url_path="bulk-delete")
+    def bulk_delete(self, request):
+        id_list, err = _parse_bulk_ids(request.data.get("ids"))
+        if err:
+            return err
+        deleted, _ = Lead.objects.filter(id__in=id_list).delete()
+        return Response({"deleted": deleted, "requested": len(id_list)})
+
     @action(detail=True, methods=["post"], url_path="reject")
     def reject(self, request, pk=None):
         lead = self.get_object()
@@ -2066,32 +2516,97 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
             "campaign_region__campaign",
             "campaign_region__region",
             "campaign_subfunnel__template",
+            "campaign_subfunnel__binding",
             "campaign_subfunnel__role",
             "current_template_stage",
             "assignee",
         ).prefetch_related("checklist_values__template_item")
 
     def perform_update(self, serializer):
+        prev_stage = serializer.instance.current_template_stage
         prev_status = serializer.instance.status
+        explicit_status = "status" in serializer.validated_data
         obj = serializer.save()
-        if obj.current_template_stage_id:
+        obj.status = LeadSubfunnel.normalize_status(obj.status)
+        if not explicit_status and obj.current_template_stage_id:
             mapped = LeadSubfunnel.status_from_stage(obj.current_template_stage)
             if mapped != obj.status:
                 obj.status = mapped
-                obj.save(update_fields=["status", "updated_at"])
-        if prev_status != LeadSubfunnel.Status.DONE and obj.status == LeadSubfunnel.Status.DONE:
-            obj.completed_at = timezone.now()
-            obj.save(update_fields=["completed_at", "updated_at"])
-        if prev_status == LeadSubfunnel.Status.DONE and obj.status != LeadSubfunnel.Status.DONE:
-            obj.completed_at = None
-            obj.save(update_fields=["completed_at", "updated_at"])
+        update_fields = []
+        if obj.status != prev_status or explicit_status:
+            update_fields.extend(["status", "updated_at"])
+            if obj.status == LeadSubfunnel.Status.DONE:
+                if not obj.completed_at:
+                    obj.completed_at = timezone.now()
+                    update_fields.append("completed_at")
+            elif prev_status == LeadSubfunnel.Status.DONE:
+                obj.completed_at = None
+                update_fields.append("completed_at")
+        if update_fields:
+            obj.save(update_fields=list(dict.fromkeys(update_fields)))
+        self._advance_lead_stage_from_task_transition(
+            obj,
+            request_user=self.request.user,
+            from_stage=prev_stage,
+            to_stage=obj.current_template_stage,
+        )
+
+    @staticmethod
+    def _advance_lead_stage_from_task_transition(subfunnel, request_user=None, from_stage=None, to_stage=None):
+        if not subfunnel.lead_id:
+            return
+        if not from_stage or not to_stage:
+            return
+        if not to_stage.is_terminal:
+            return
+        if to_stage.order <= from_stage.order:
+            return
+        campaign_subfunnel = subfunnel.campaign_subfunnel
+        if not campaign_subfunnel:
+            return
+        binding = campaign_subfunnel.binding
+        if not binding or binding.binding_type != SubfunnelTemplateBinding.BindingType.STAGE:
+            return
+        if not getattr(binding, "advance_lead_on_task_stage_forward", False):
+            return
+        lead = subfunnel.lead
+        if not lead or not lead.funnel_id or not lead.current_stage_id:
+            return
+        if lead.current_stage.is_rejection:
+            return
+
+        normal_stages = list(lead.funnel.stages.filter(is_rejection=False).order_by("order"))
+        if not normal_stages:
+            return
+        current_idx = next((i for i, s in enumerate(normal_stages) if s.id == lead.current_stage_id), -1)
+        if current_idx < 0 or current_idx >= len(normal_stages) - 1:
+            return
+
+        old_stage = lead.current_stage
+        lead.current_stage = normal_stages[current_idx + 1]
+        update_fields = ["current_stage", "updated_at"]
+        if lead.current_stage.primary_contact_specialist_id:
+            lead.primary_contact_specialist_id = lead.current_stage.primary_contact_specialist_id
+            update_fields.append("primary_contact_specialist")
+        lead.save(update_fields=update_fields)
+        LeadViewSet._ensure_checklist_values(lead, lead.current_stage)
+        LeadViewSet._refresh_subfunnel_availability(lead)
+        old_name = old_stage.name if old_stage else "—"
+        new_name = lead.current_stage.name if lead.current_stage else "—"
+        _log_lead_activity(
+            lead,
+            request_user,
+            LeadActivityLog.EventType.STAGE,
+            f"{old_name} → {new_name} (авто из задачи)",
+        )
 
     @action(detail=True, methods=["post"], url_path="advance-task-stage")
     def advance_task_stage(self, request, pk=None):
         subfunnel = self.get_object()
         stages = list(
             TaskTemplateStage.objects.filter(
-                template_id=subfunnel.campaign_subfunnel.template_id
+                template_id=subfunnel.campaign_subfunnel.template_id,
+                is_active=True,
             ).order_by("order", "id")
         )
         if not stages:
@@ -2100,12 +2615,19 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
         idx = next((i for i, s in enumerate(stages) if s.id == current_id), 0)
         if idx >= len(stages) - 1:
             return Response({"detail": "Задача уже на последнем этапе."}, status=status.HTTP_400_BAD_REQUEST)
+        prev_stage = stages[idx]
         next_stage = stages[idx + 1]
         subfunnel.current_template_stage = next_stage
         subfunnel.status = LeadSubfunnel.status_from_stage(next_stage)
         if subfunnel.status == LeadSubfunnel.Status.DONE and not subfunnel.completed_at:
             subfunnel.completed_at = timezone.now()
         subfunnel.save(update_fields=["current_template_stage", "status", "completed_at", "updated_at"])
+        self._advance_lead_stage_from_task_transition(
+            subfunnel,
+            request_user=request.user,
+            from_stage=prev_stage,
+            to_stage=next_stage,
+        )
         return Response(LeadSubfunnelSerializer(subfunnel).data)
 
     @action(detail=True, methods=["post"], url_path="retreat-task-stage")
@@ -2113,7 +2635,8 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
         subfunnel = self.get_object()
         stages = list(
             TaskTemplateStage.objects.filter(
-                template_id=subfunnel.campaign_subfunnel.template_id
+                template_id=subfunnel.campaign_subfunnel.template_id,
+                is_active=True,
             ).order_by("order", "id")
         )
         if not stages:
@@ -2133,12 +2656,13 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="set-task-stage")
     def set_task_stage(self, request, pk=None):
         subfunnel = self.get_object()
+        prev_stage = subfunnel.current_template_stage
         stage_id = request.data.get("stage_id")
         if not stage_id or not str(stage_id).isdigit():
             return Response({"detail": "Нужно передать корректный stage_id."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            target_stage = TaskTemplateStage.objects.get(id=int(stage_id))
+            target_stage = TaskTemplateStage.objects.get(id=int(stage_id), is_active=True)
         except TaskTemplateStage.DoesNotExist:
             return Response({"detail": "Этап задачи не найден."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -2155,6 +2679,12 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
         else:
             subfunnel.completed_at = None
         subfunnel.save(update_fields=["current_template_stage", "status", "completed_at", "updated_at"])
+        self._advance_lead_stage_from_task_transition(
+            subfunnel,
+            request_user=request.user,
+            from_stage=prev_stage,
+            to_stage=target_stage,
+        )
         return Response(LeadSubfunnelSerializer(subfunnel).data)
 
     @action(detail=True, methods=["get"], url_path="region-capture")
@@ -2214,10 +2744,11 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
         due_at_provided = "due_at" in request.data
         clear_due_at = bool(request.data.get("clear_due_at"))
         stage_id_provided = "stage_id" in request.data
+        status_provided = "status" in request.data
 
-        if not any([assignee_provided, due_at_provided, clear_due_at, stage_id_provided]):
+        if not any([assignee_provided, due_at_provided, clear_due_at, stage_id_provided, status_provided]):
             return Response(
-                {"detail": "Укажите хотя бы одно поле: assignee, due_at, clear_due_at или stage_id."},
+                {"detail": "Укажите хотя бы одно поле: assignee, due_at, clear_due_at, stage_id или status."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -2228,7 +2759,7 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
                 if not str(stage_raw).isdigit():
                     return Response({"detail": "Некорректный stage_id."}, status=status.HTTP_400_BAD_REQUEST)
                 try:
-                    target_stage = TaskTemplateStage.objects.get(id=int(stage_raw))
+                    target_stage = TaskTemplateStage.objects.get(id=int(stage_raw), is_active=True)
                 except TaskTemplateStage.DoesNotExist:
                     return Response({"detail": "Этап задачи не найден."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -2242,12 +2773,20 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
                 if timezone.is_naive(parsed_due_at):
                     parsed_due_at = timezone.make_aware(parsed_due_at, timezone.get_current_timezone())
 
+        bulk_status = None
+        if status_provided:
+            raw_status = request.data.get("status")
+            if raw_status not in TASK_WORKFLOW_STATUS_VALUES:
+                return Response({"detail": "Некорректный status."}, status=status.HTTP_400_BAD_REQUEST)
+            bulk_status = LeadSubfunnel.normalize_status(raw_status)
+
         rows = list(self.get_queryset().filter(id__in=id_list))
         updated = 0
         skipped = []
 
         for row in rows:
             update_fields = ["updated_at"]
+            prev_stage = row.current_template_stage
 
             if assignee_provided:
                 assignee = request.data.get("assignee")
@@ -2261,11 +2800,23 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
                 row.due_at = parsed_due_at
                 update_fields.append("due_at")
 
+            if status_provided:
+                row.status = bulk_status
+                update_fields.append("status")
+                if row.status == LeadSubfunnel.Status.DONE:
+                    row.completed_at = row.completed_at or timezone.now()
+                    update_fields.append("completed_at")
+                elif row.completed_at:
+                    row.completed_at = None
+                    update_fields.append("completed_at")
+
             if stage_id_provided:
                 if target_stage is None:
                     row.current_template_stage = None
-                    row.status = LeadSubfunnel.Status.TODO
-                    update_fields.extend(["current_template_stage", "status"])
+                    if not status_provided:
+                        row.status = LeadSubfunnel.Status.BACKLOG
+                        update_fields.append("status")
+                    update_fields.append("current_template_stage")
                 elif target_stage.template_id != row.campaign_subfunnel.template_id:
                     skipped.append({
                         "id": row.id,
@@ -2274,8 +2825,10 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
                     continue
                 else:
                     row.current_template_stage = target_stage
-                    row.status = LeadSubfunnel.status_from_stage(target_stage)
-                    update_fields.extend(["current_template_stage", "status"])
+                    update_fields.append("current_template_stage")
+                    if not status_provided:
+                        row.status = LeadSubfunnel.status_from_stage(target_stage)
+                        update_fields.append("status")
                     if row.status == LeadSubfunnel.Status.DONE:
                         row.completed_at = row.completed_at or timezone.now()
                         update_fields.append("completed_at")
@@ -2284,6 +2837,13 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
                         update_fields.append("completed_at")
 
             row.save(update_fields=list(dict.fromkeys(update_fields)))
+            if stage_id_provided and target_stage is not None:
+                self._advance_lead_stage_from_task_transition(
+                    row,
+                    request_user=request.user,
+                    from_stage=prev_stage,
+                    to_stage=target_stage,
+                )
             updated += 1
 
         return Response({
@@ -2291,6 +2851,96 @@ class LeadSubfunnelViewSet(viewsets.ModelViewSet):
             "skipped": skipped,
             "requested": len(id_list),
         })
+
+    @action(detail=False, methods=["post"], url_path="bulk-checklist")
+    def bulk_checklist(self, request):
+        id_list, err = _parse_bulk_ids(request.data.get("ids"))
+        if err:
+            return err
+
+        template_item_raw = request.data.get("template_item_id")
+        if not template_item_raw or not str(template_item_raw).isdigit():
+            return Response(
+                {"detail": "Укажите template_item_id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        is_completed_provided = "is_completed" in request.data
+        text_value_provided = "text_value" in request.data
+        if not is_completed_provided and not text_value_provided:
+            return Response(
+                {"detail": "Укажите is_completed и/или text_value."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            template_item = SubfunnelTemplateItem.objects.get(id=int(template_item_raw))
+        except SubfunnelTemplateItem.DoesNotExist:
+            return Response({"detail": "Пункт шаблона не найден."}, status=status.HTTP_400_BAD_REQUEST)
+
+        rows = list(
+            self.get_queryset()
+            .filter(id__in=id_list)
+            .prefetch_related("checklist_values")
+        )
+        updated_tasks = 0
+        updated_values = 0
+        skipped = []
+
+        for row in rows:
+            if row.campaign_subfunnel.template_id != template_item.template_id:
+                skipped.append({
+                    "id": row.id,
+                    "reason": "Пункт не принадлежит шаблону задачи.",
+                })
+                continue
+            try:
+                value = row.checklist_values.get(template_item_id=template_item.id)
+            except LeadSubfunnelChecklistValue.DoesNotExist:
+                skipped.append({
+                    "id": row.id,
+                    "reason": "Пункт чек-листа не найден для задачи.",
+                })
+                continue
+
+            changed = False
+            if is_completed_provided:
+                new_completed = bool(request.data.get("is_completed"))
+                if value.is_completed != new_completed:
+                    value.is_completed = new_completed
+                    if new_completed:
+                        value.completed_at = timezone.now()
+                        value.completed_by = request.user
+                    else:
+                        value.completed_at = None
+                        value.completed_by = None
+                    changed = True
+
+            if text_value_provided:
+                new_text = request.data.get("text_value") or ""
+                if value.text_value != new_text:
+                    value.text_value = new_text
+                    changed = True
+
+            if changed:
+                value.save()
+                updated_values += 1
+                updated_tasks += 1
+
+        return Response({
+            "updated_tasks": updated_tasks,
+            "updated_values": updated_values,
+            "skipped": skipped,
+            "requested": len(id_list),
+        })
+
+    @action(detail=False, methods=["post"], url_path="bulk-delete")
+    def bulk_delete(self, request):
+        id_list, err = _parse_bulk_ids(request.data.get("ids"))
+        if err:
+            return err
+        deleted, _ = LeadSubfunnel.objects.filter(id__in=id_list).delete()
+        return Response({"deleted": deleted, "requested": len(id_list)})
 
     @action(detail=True, methods=["get", "patch"], url_path="checklist")
     def checklist(self, request, pk=None):

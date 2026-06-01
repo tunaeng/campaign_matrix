@@ -35,6 +35,17 @@ def serialize_contact_brief(contact):
     }
 
 
+def extract_forwarded_from_notes(notes):
+    first_line = ((notes or "").splitlines() or [""])[0].strip()
+    prefix = "Передано от организации:"
+    if not first_line.startswith(prefix):
+        return None
+    value = first_line[len(prefix):].strip()
+    if ". Комментарий:" in value:
+        value = value.split(". Комментарий:", 1)[0].strip()
+    return value or None
+
+
 class CampaignQueueSerializer(serializers.ModelSerializer):
     stage_deadlines = serializers.SerializerMethodField()
 
@@ -380,6 +391,7 @@ class LeadListSerializer(serializers.ModelSerializer):
     )
     tag_names = serializers.SerializerMethodField()
     organization_tags = serializers.SerializerMethodField()
+    forwarded_from = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
@@ -396,6 +408,7 @@ class LeadListSerializer(serializers.ModelSerializer):
             "demand_collected_declared", "demand_collected_list",
             "demand_quota_declared", "demand_quota_list",
             "notes",
+            "forwarded_from",
             "tags", "tag_names", "organization_tags",
             "checklist_progress", "checklist_summary", "tasks_summary", "last_interaction",
             "primary_contact",
@@ -492,6 +505,9 @@ class LeadListSerializer(serializers.ModelSerializer):
 
     def get_primary_contact(self, obj):
         return serialize_contact_brief(obj.primary_contact)
+
+    def get_forwarded_from(self, obj):
+        return extract_forwarded_from_notes(obj.notes)
 
 
 class LeadDetailSerializer(LeadListSerializer):
@@ -622,6 +638,7 @@ class LeadSubfunnelSerializer(serializers.ModelSerializer):
     can_advance_stage = serializers.SerializerMethodField()
     can_retreat_stage = serializers.SerializerMethodField()
     checklist_values = LeadSubfunnelChecklistValueSerializer(many=True, read_only=True)
+    forwarded_from = serializers.SerializerMethodField()
 
     class Meta:
         model = LeadSubfunnel
@@ -651,6 +668,7 @@ class LeadSubfunnelSerializer(serializers.ModelSerializer):
             "due_at",
             "completed_at",
             "is_available",
+            "forwarded_from",
             "checklist_values",
         ]
 
@@ -676,6 +694,11 @@ class LeadSubfunnelSerializer(serializers.ModelSerializer):
         if obj.lead and obj.lead.organization:
             return obj.lead.organization.name
         return None
+
+    def get_forwarded_from(self, obj):
+        if not obj.lead:
+            return None
+        return extract_forwarded_from_notes(obj.lead.notes)
 
     def _ordered_stage_ids(self, obj):
         return list(
@@ -1540,8 +1563,11 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
             CampaignCreateSerializer._materialize_lead_subfunnels(lead)
 
     @staticmethod
-    def _materialize_lead_subfunnels(lead):
-        subfunnels = lead.campaign.subfunnels.filter(is_active=True).select_related(
+    def _materialize_lead_subfunnels(lead, source: str = ""):
+        subfunnels = lead.campaign.subfunnels.filter(is_active=True)
+        if source == "collect_import":
+            subfunnels = subfunnels.filter(template__auto_create_on_collect_import=True)
+        subfunnels = subfunnels.select_related(
             "template",
             "binding",
             "default_assignee",
@@ -1552,7 +1578,7 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
             defaults = {
                 "assignee_id": sub.default_assignee_id,
                 "current_template_stage_id": default_stage.id if default_stage else None,
-                "status": LeadSubfunnel.status_from_stage(default_stage),
+                "status": LeadSubfunnel.Status.BACKLOG,
                 "is_available": True,
             }
             if sub.binding and sub.binding.binding_type == "stage_range_checklist":
@@ -1568,9 +1594,8 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
                 defaults=defaults,
             )
             if not lead_sub.current_template_stage_id and default_stage:
-                stage_for_status = CampaignCreateSerializer._stage_for_legacy_status(stages, lead_sub.status)
-                lead_sub.current_template_stage_id = stage_for_status.id
-                lead_sub.status = LeadSubfunnel.status_from_stage(stage_for_status)
+                lead_sub.current_template_stage_id = default_stage.id
+                lead_sub.status = LeadSubfunnel.normalize_status(lead_sub.status)
                 lead_sub.save(update_fields=["current_template_stage", "status", "updated_at"])
             for item in sub.template.items.all():
                 LeadSubfunnelChecklistValue.objects.get_or_create(
