@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { ColumnsType } from 'antd/es/table';
 import {
   DndContext,
@@ -44,50 +44,55 @@ import {
   ExportOutlined,
   UnorderedListOutlined,
   UserOutlined,
+  CheckOutlined,
   CalendarOutlined,
   NodeIndexOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import TaskEditDrawer from '../../components/TaskEditDrawer';
+import KanbanColumnHeader from '../../components/KanbanColumnHeader';
 import {
   useBulkUpdateLeadSubfunnels,
+  useBulkUpdateLeadSubfunnelChecklist,
+  useBulkDeleteLeadSubfunnels,
   useCampaigns,
-  useRoles,
+  usePatchLeadSubfunnel,
   useSetLeadSubfunnelStage,
+  useRoles,
+  useSubfunnelTemplateItems,
   useSubfunnelWorkspace,
+  useTaskTemplateStages,
   useUsers,
 } from '../../api/hooks';
 import { getAxiosErrorMessage } from '../../api/errorMessage';
 import type { SubfunnelWorkspaceItem } from '../../types';
+import { normalizeTaskStatus, TASK_STATUS_META, TASK_WORKFLOW_STATUSES, type TaskWorkflowStatus } from '../../utils/taskStatusLabels';
 import './BoardStyles.css';
 
-type TaskDragPayload = { type: 'task'; taskId: number; stageId: number | null };
+type TaskDragPayload = { type: 'task'; taskId: number; stageKey: string };
 type ViewMode = 'kanban' | 'list';
-type BulkModalKind = 'assignee' | 'due' | 'stage' | null;
-
-const TASK_STATUS_META: Record<string, { label: string; color: string }> = {
-  todo: { label: 'К выполнению', color: 'default' },
-  in_progress: { label: 'В работе', color: 'processing' },
-  blocked: { label: 'Заблокирована', color: 'warning' },
-  done: { label: 'Готово', color: 'success' },
-};
+type BulkModalKind = 'assignee' | 'due' | 'status' | 'stage' | 'checklist' | null;
 
 function TaskCardFace({ item }: { item: SubfunnelWorkspaceItem }) {
-  const status = TASK_STATUS_META[item.status] || { label: item.status, color: 'default' };
+  const workflowStatus = normalizeTaskStatus(item.status);
+  const status = TASK_STATUS_META[workflowStatus] || { label: item.status, color: 'default' };
   const checklist = item.checklist_progress;
+  const checklistItems = item.checklist_summary || [];
   const checklistPct = checklist && checklist.total > 0
     ? Math.round((checklist.completed / checklist.total) * 100)
     : null;
 
   return (
-    <div className={`kanban-task-card-body kanban-task-card-body--${item.status}`}>
+    <div className={`kanban-task-card-body kanban-task-card-body--${workflowStatus}`}>
       <div className="kanban-task-card-head">
         <div className="kanban-task-card-head-main">
-          <div className="kanban-task-card-template">{item.template_name}</div>
-          <div className="kanban-task-card-subject">
-            {item.is_region_task && (
+          {item.is_region_task && (
+            <div className="kanban-task-card-tag-row">
               <Tag color="cyan" className="kanban-task-card-region-tag">Регион</Tag>
-            )}
+            </div>
+          )}
+          <div className="kanban-task-card-template">
             <span className="kanban-task-card-subject-name">{item.lead_name}</span>
           </div>
         </div>
@@ -97,6 +102,14 @@ function TaskCardFace({ item }: { item: SubfunnelWorkspaceItem }) {
           {!item.is_available && <Tag>Недоступна</Tag>}
         </div>
       </div>
+
+      {item.forwarded_from && (
+        <div className="kanban-task-card-forward-row">
+          <Tag color="gold" className="kanban-task-card-forward-tag" title={item.forwarded_from}>
+            От: {item.forwarded_from}
+          </Tag>
+        </div>
+      )}
 
       <div className="kanban-task-card-meta">
         <span className="kanban-task-card-meta-item" title="Кампания">
@@ -113,6 +126,13 @@ function TaskCardFace({ item }: { item: SubfunnelWorkspaceItem }) {
           <UserOutlined />
           <span>{item.assignee_name || 'Не назначен'}</span>
         </span>
+        {item.show_capture_counts && item.capture_counts && (
+          <span className="kanban-task-card-meta-item" title="Добавлено в задаче">
+            <span>
+              Орг: {item.capture_counts.organizations} · Конт: {item.capture_counts.contacts}
+            </span>
+          </span>
+        )}
       </div>
 
       <div className="kanban-task-card-footer">
@@ -143,6 +163,16 @@ function TaskCardFace({ item }: { item: SubfunnelWorkspaceItem }) {
           <span className="kanban-task-card-checklist-label">
             {checklist!.completed}/{checklist!.total}
           </span>
+        </div>
+      )}
+      {checklistItems.length > 0 && (
+        <div className="kanban-card-checklist kanban-task-card-checklist-items">
+          {checklistItems.map((checklistItem, idx) => (
+            <div key={idx} className={`kanban-checklist-item${checklistItem.done ? ' done' : ''}`}>
+              <CheckOutlined style={{ fontSize: 10, color: checklistItem.done ? '#52c41a' : '#d9d9d9' }} />
+              <span>{checklistItem.text}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -178,7 +208,11 @@ function TaskBoardCard({
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `task-${item.id}`,
     disabled: dragDisabled,
-    data: { type: 'task', taskId: item.id, stageId: item.current_template_stage_id ?? null } satisfies TaskDragPayload,
+    data: {
+      type: 'task',
+      taskId: item.id,
+      stageKey: item.board_stage_key || `stage-${item.current_template_stage_id ?? 'unassigned'}`,
+    } satisfies TaskDragPayload,
   });
 
   return (
@@ -226,9 +260,12 @@ interface TaskBulkToolbarProps {
   busy: boolean;
   onAssignee: () => void;
   onDue: () => void;
+  onStatus: () => void;
   onStage: () => void;
+  onChecklist: () => void;
   onClearAssignee: () => void;
   onClearDue: () => void;
+  onDelete: () => void;
   onClearSelection: () => void;
 }
 
@@ -237,9 +274,12 @@ function TaskBulkToolbar({
   busy,
   onAssignee,
   onDue,
+  onStatus,
   onStage,
+  onChecklist,
   onClearAssignee,
   onClearDue,
+  onDelete,
   onClearSelection,
 }: TaskBulkToolbarProps) {
   return (
@@ -261,14 +301,23 @@ function TaskBulkToolbar({
           <Button size="small" icon={<CalendarOutlined />} disabled={busy} onClick={onDue}>
             Срок…
           </Button>
+          <Button size="small" icon={<NodeIndexOutlined />} disabled={busy} onClick={onStatus}>
+            Статус…
+          </Button>
           <Button size="small" icon={<NodeIndexOutlined />} disabled={busy} onClick={onStage}>
             Этап…
+          </Button>
+          <Button size="small" icon={<CheckOutlined />} disabled={busy} onClick={onChecklist}>
+            Чек-лист…
           </Button>
           <Button size="small" disabled={busy} onClick={onClearAssignee}>
             Снять исполнителя
           </Button>
           <Button size="small" disabled={busy} onClick={onClearDue}>
             Снять срок
+          </Button>
+          <Button size="small" danger icon={<DeleteOutlined />} disabled={busy} onClick={onDelete}>
+            Удалить
           </Button>
           <Button size="small" type="link" disabled={busy} onClick={onClearSelection}>
             Снять выбор
@@ -282,15 +331,19 @@ function TaskBulkToolbar({
 export default function SubfunnelWorkspacePage() {
   const { message } = App.useApp();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+  const patchTask = usePatchLeadSubfunnel();
   const setTaskStage = useSetLeadSubfunnelStage();
   const bulkUpdate = useBulkUpdateLeadSubfunnels();
+  const bulkChecklist = useBulkUpdateLeadSubfunnelChecklist();
+  const bulkDelete = useBulkDeleteLeadSubfunnels();
 
   const [viewMode, setViewMode] = useState<ViewMode>('kanban');
   const [campaign, setCampaign] = useState<number | undefined>();
   const [role, setRole] = useState<number | undefined>();
   const [assignee, setAssignee] = useState<number | undefined>();
-  const [status, setStatus] = useState<number | undefined>();
+  const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [overdue, setOverdue] = useState<boolean | undefined>();
   const [search, setSearch] = useState('');
   const [activeTemplate, setActiveTemplate] = useState<number | undefined>();
@@ -303,15 +356,29 @@ export default function SubfunnelWorkspacePage() {
   const { data: campaignsData } = useCampaigns({ page_size: 200 });
   const { data: rolesData } = useRoles({ page_size: 200 });
   const { data: usersData } = useUsers();
+  const { data: templateItems = [] } = useSubfunnelTemplateItems(activeTemplate);
+  const { data: templateStages = [] } = useTaskTemplateStages(activeTemplate);
   const { data, isLoading, isError, error, refetch } = useSubfunnelWorkspace({
     view_mode: viewMode === 'kanban' ? 'kanban' : 'table',
     campaign,
     template: activeTemplate,
     role,
     assignee,
-    status,
+    status: statusFilter,
     overdue,
   });
+
+  useEffect(() => {
+    const campaignParam = searchParams.get('campaign');
+    const assigneeParam = searchParams.get('assignee');
+    const templateParam = searchParams.get('template');
+    const parsedCampaign = campaignParam && /^\d+$/.test(campaignParam) ? Number(campaignParam) : undefined;
+    const parsedAssignee = assigneeParam && /^\d+$/.test(assigneeParam) ? Number(assigneeParam) : undefined;
+    const parsedTemplate = templateParam && /^\d+$/.test(templateParam) ? Number(templateParam) : undefined;
+    if (parsedCampaign !== undefined) setCampaign(parsedCampaign);
+    if (parsedAssignee !== undefined) setAssignee(parsedAssignee);
+    if (parsedTemplate !== undefined) setActiveTemplate(parsedTemplate);
+  }, [searchParams]);
 
   useEffect(() => {
     if (!data?.templates?.length) return;
@@ -322,12 +389,36 @@ export default function SubfunnelWorkspacePage() {
 
   useEffect(() => {
     setSelectedRowKeys([]);
-  }, [activeTemplate, campaign, role, assignee, status, overdue]);
+  }, [activeTemplate, campaign, role, assignee, statusFilter, overdue]);
 
   const campaignOptions = (campaignsData?.results || []).map((c) => ({ value: c.id, label: c.name }));
   const roleOptions = (rolesData?.results || []).map((r) => ({ value: r.id, label: r.name }));
   const userOptions = (usersData?.results || []).map((u) => ({ value: u.id, label: u.full_name || u.username }));
-  const stageOptions = (data?.columns || []).map((col) => ({ value: col.stage_id, label: col.stage_name }));
+  const stageFilterOptions = (data?.columns || []).map((col) => ({
+    value: col.status,
+    label: col.stage_name,
+  }));
+  const workflowStatusOptions = TASK_WORKFLOW_STATUSES.map((status) => ({
+    value: status,
+    label: TASK_STATUS_META[status].label,
+  }));
+  const checklistItemOptions = useMemo(
+    () => [...templateItems]
+      .filter((item) => item.execution_type !== 'stage')
+      .sort((a, b) => a.order - b.order)
+      .map((item) => ({
+        value: item.id,
+        label: item.stage_name ? `${item.title} (${item.stage_name})` : item.title,
+      })),
+    [templateItems],
+  );
+  const stageBulkOptions = useMemo(
+    () => [...templateStages]
+      .filter((s) => s.is_active)
+      .sort((a, b) => a.order - b.order)
+      .map((s) => ({ value: s.id, label: s.name })),
+    [templateStages],
+  );
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -340,13 +431,12 @@ export default function SubfunnelWorkspacePage() {
     );
   }, [data, search]);
 
-  const filteredByStage = useMemo(() => {
-    const map = new Map<number, SubfunnelWorkspaceItem[]>();
+  const filteredByStatus = useMemo(() => {
+    const map = new Map<string, SubfunnelWorkspaceItem[]>();
     for (const item of filteredItems) {
-      const stageId = item.current_template_stage_id;
-      if (!stageId) continue;
-      if (!map.has(stageId)) map.set(stageId, []);
-      map.get(stageId)!.push(item);
+      const stageKey = item.board_stage_key || `stage-${item.current_template_stage_id ?? 'unassigned'}`;
+      if (!map.has(stageKey)) map.set(stageKey, []);
+      map.get(stageKey)!.push(item);
     }
     return map;
   }, [filteredItems]);
@@ -365,11 +455,31 @@ export default function SubfunnelWorkspacePage() {
     setSelectedRowKeys([]);
   }
 
+  async function runBulkDelete() {
+    if (!selectedRowKeys.length) return;
+    Modal.confirm({
+      title: `Удалить ${selectedRowKeys.length} задач?`,
+      okText: 'Удалить',
+      okType: 'danger',
+      cancelText: 'Отмена',
+      onOk: async () => {
+        try {
+          const result = await bulkDelete.mutateAsync(selectedRowKeys);
+          message.success(`Удалено задач: ${result.deleted ?? 0}`);
+          clearSelection();
+        } catch {
+          message.error('Не удалось удалить задачи');
+        }
+      },
+    });
+  }
+
   async function runBulkUpdate(payload: {
     assignee?: number | null;
     due_at?: string | null;
     clear_due_at?: boolean;
     stage_id?: number | null;
+    status?: TaskWorkflowStatus;
   }) {
     if (!selectedRowKeys.length) return;
     try {
@@ -388,6 +498,30 @@ export default function SubfunnelWorkspacePage() {
     }
   }
 
+  async function runBulkChecklist(payload: {
+    template_item_id: number;
+    is_completed?: boolean;
+    text_value?: string;
+  }) {
+    if (!selectedRowKeys.length) return;
+    try {
+      const result = await bulkChecklist.mutateAsync({ ids: selectedRowKeys, ...payload });
+      const skipped = result.skipped?.length || 0;
+      if (result.updated_tasks === 0 && skipped > 0) {
+        message.warning(`Изменений нет. Пропущено: ${skipped}.`);
+      } else if (skipped > 0) {
+        message.warning(`Обновлено задач: ${result.updated_tasks}. Пропущено: ${skipped}.`);
+      } else {
+        message.success(`Обновлено задач: ${result.updated_tasks}`);
+      }
+      setBulkModal(null);
+      bulkForm.resetFields();
+      clearSelection();
+    } catch {
+      message.error('Не удалось обновить чек-лист');
+    }
+  }
+
   function handleDragStart(event: DragStartEvent) {
     const payload = event.active.data.current as TaskDragPayload | undefined;
     if (!payload?.taskId) return;
@@ -403,12 +537,24 @@ export default function SubfunnelWorkspacePage() {
     if (!payload?.taskId) return;
     const overId = String(over.id);
     if (!overId.startsWith('stage-')) return;
-    const newStageId = Number(overId.slice('stage-'.length));
-    if (!Number.isFinite(newStageId) || newStageId <= 0) return;
-    if (payload.stageId === newStageId) return;
-
+    if (payload.stageKey === overId) return;
+    const stageMatch = overId.match(/^stage-(\d+)$/);
+    if (!stageMatch) {
+      if (overId === 'stage-unassigned') {
+        bulkUpdate.mutate(
+          { ids: [payload.taskId], stage_id: null },
+          {
+            onSuccess: () => message.success('Этап задачи очищен'),
+            onError: () => message.error('Не удалось убрать этап задачи'),
+          },
+        );
+        return;
+      }
+      message.warning('Нельзя перенести задачу в эту колонку');
+      return;
+    }
     setTaskStage.mutate(
-      { id: payload.taskId, stage_id: newStageId },
+      { id: payload.taskId, stage_id: Number(stageMatch[1]) },
       {
         onSuccess: () => message.success('Этап задачи обновлён'),
         onError: () => message.error('Не удалось перенести задачу'),
@@ -422,14 +568,16 @@ export default function SubfunnelWorkspacePage() {
       dataIndex: 'lead_name',
       key: 'lead_name',
       render: (name: string, row) => (
-        <Typography.Link
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/campaigns/${row.campaign_id}/leads/${row.lead_id}`);
-          }}
-        >
-          {name}
-        </Typography.Link>
+        row.lead_id ? (
+          <Typography.Link
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(`/campaigns/${row.campaign_id}/leads/${row.lead_id}`);
+            }}
+          >
+            {name}
+          </Typography.Link>
+        ) : name
       ),
     },
     { title: 'Кампания', dataIndex: 'campaign_name', key: 'campaign_name', ellipsis: true },
@@ -458,7 +606,7 @@ export default function SubfunnelWorkspacePage() {
       dataIndex: 'status',
       key: 'status',
       width: 120,
-      render: (s: string) => TASK_STATUS_META[s]?.label || s,
+      render: (s: string) => TASK_STATUS_META[normalizeTaskStatus(s)]?.label || s,
     },
     {
       title: 'Чек-лист',
@@ -506,7 +654,7 @@ export default function SubfunnelWorkspacePage() {
     );
   }
 
-  const bulkBusy = bulkUpdate.isPending;
+  const bulkBusy = bulkUpdate.isPending || bulkChecklist.isPending || bulkDelete.isPending || patchTask.isPending || setTaskStage.isPending;
 
   return (
     <div>
@@ -551,10 +699,10 @@ export default function SubfunnelWorkspacePage() {
         <Select
           allowClear
           style={{ width: 220 }}
-          value={status}
+          value={statusFilter}
           placeholder="Этап задачи"
-          onChange={setStatus}
-          options={stageOptions}
+          onChange={setStatusFilter}
+          options={stageFilterOptions}
         />
         <Select
           allowClear
@@ -578,7 +726,7 @@ export default function SubfunnelWorkspacePage() {
         activeKey={activeTemplate ? String(activeTemplate) : undefined}
         onChange={(key) => {
           setActiveTemplate(Number(key));
-          setStatus(undefined);
+          setStatusFilter(undefined);
         }}
         items={(data?.templates || []).map((t) => ({
           key: String(t.id),
@@ -592,9 +740,12 @@ export default function SubfunnelWorkspacePage() {
           busy={bulkBusy}
           onAssignee={() => setBulkModal('assignee')}
           onDue={() => setBulkModal('due')}
+          onStatus={() => setBulkModal('status')}
           onStage={() => setBulkModal('stage')}
+          onChecklist={() => setBulkModal('checklist')}
           onClearAssignee={() => runBulkUpdate({ assignee: null })}
           onClearDue={() => runBulkUpdate({ clear_due_at: true })}
+          onDelete={runBulkDelete}
           onClearSelection={clearSelection}
         />
       )}
@@ -608,14 +759,20 @@ export default function SubfunnelWorkspacePage() {
         >
           <div className="kanban-board">
             {(data?.columns || []).map((col) => {
-              const items = filteredByStage.get(col.stage_id) || [];
+              const items = filteredByStatus.get(col.status) || [];
+              const columnIds = items.map((item) => item.id);
               return (
-                <div key={col.stage_id} className="kanban-column">
-                  <div className="kanban-column-header">
+                <div key={col.status} className="kanban-column">
+                  <KanbanColumnHeader
+                    count={items.length}
+                    columnIds={columnIds}
+                    selectedIds={selectedRowKeys}
+                    onSelectionChange={setSelectedRowKeys}
+                    disabled={bulkBusy}
+                  >
                     <h4>{col.stage_name}</h4>
-                    <span className="kanban-column-count">{items.length}</span>
-                  </div>
-                  <KanbanDropColumn id={`stage-${col.stage_id}`}>
+                  </KanbanColumnHeader>
+                  <KanbanDropColumn id={col.status}>
                     {items.length === 0 ? (
                       <Typography.Text type="secondary">Пусто</Typography.Text>
                     ) : (
@@ -626,8 +783,8 @@ export default function SubfunnelWorkspacePage() {
                           selected={selectedSet.has(item.id)}
                           onToggleSelect={toggleSelect}
                           onOpen={setEditingTask}
-                          onOpenLead={(row) => navigate(`/campaigns/${row.campaign_id}/leads/${row.lead_id}`)}
-                          dragDisabled={setTaskStage.isPending || bulkBusy}
+                          onOpenLead={(row) => window.open(`/campaigns/${row.campaign_id}/leads/${row.lead_id}`, '_blank', 'noopener,noreferrer')}
+                          dragDisabled={patchTask.isPending || bulkBusy}
                           selectDisabled={bulkBusy}
                         />
                       ))
@@ -719,19 +876,106 @@ export default function SubfunnelWorkspacePage() {
       </Modal>
 
       <Modal
-        title="Сменить этап задачи"
-        open={bulkModal === 'stage'}
+        title="Сменить статус"
+        open={bulkModal === 'status'}
         onCancel={() => { setBulkModal(null); bulkForm.resetFields(); }}
         onOk={async () => {
           const vals = await bulkForm.validateFields();
-          await runBulkUpdate({ stage_id: vals.stage_id });
+          await runBulkUpdate({ status: vals.status });
         }}
         confirmLoading={bulkBusy}
         destroyOnClose
       >
         <Form form={bulkForm} layout="vertical">
-          <Form.Item name="stage_id" label="Этап" rules={[{ required: true, message: 'Выберите этап' }]}>
-            <Select options={stageOptions} placeholder="Этап шаблона" />
+          <Form.Item name="status" label="Статус" rules={[{ required: true, message: 'Выберите статус' }]}>
+            <Select options={workflowStatusOptions} placeholder="Статус задачи" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="Сменить этап"
+        open={bulkModal === 'stage'}
+        onCancel={() => { setBulkModal(null); bulkForm.resetFields(); }}
+        onOk={async () => {
+          const vals = await bulkForm.validateFields();
+          await runBulkUpdate({ stage_id: vals.stage_id ?? null });
+        }}
+        confirmLoading={bulkBusy}
+        destroyOnClose
+      >
+        <Form form={bulkForm} layout="vertical">
+          <Form.Item name="stage_id" label="Этап задачи">
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              options={stageBulkOptions}
+              placeholder="Без этапа"
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="Изменить пункт чек-листа"
+        open={bulkModal === 'checklist'}
+        onCancel={() => { setBulkModal(null); bulkForm.resetFields(); }}
+        onOk={async () => {
+          const vals = await bulkForm.validateFields();
+          const payload: {
+            template_item_id: number;
+            is_completed?: boolean;
+            text_value?: string;
+          } = { template_item_id: vals.template_item_id };
+          if (vals.mark_status === 'done') payload.is_completed = true;
+          if (vals.mark_status === 'undone') payload.is_completed = false;
+          if (vals.update_text) payload.text_value = vals.text_value || '';
+          if (!('is_completed' in payload) && !('text_value' in payload)) {
+            message.warning('Укажите выполнение или значение пункта');
+            return;
+          }
+          await runBulkChecklist(payload);
+        }}
+        confirmLoading={bulkBusy}
+        destroyOnClose
+      >
+        <Form
+          form={bulkForm}
+          layout="vertical"
+          initialValues={{ mark_status: 'keep', update_text: false }}
+        >
+          <Form.Item
+            name="template_item_id"
+            label="Пункт чек-листа"
+            rules={[{ required: true, message: 'Выберите пункт' }]}
+          >
+            <Select
+              showSearch
+              optionFilterProp="label"
+              options={checklistItemOptions}
+              placeholder="Выберите пункт"
+              notFoundContent="Нет пунктов для текущего шаблона"
+            />
+          </Form.Item>
+          <Form.Item name="mark_status" label="Выполнение">
+            <Select
+              options={[
+                { value: 'keep', label: 'Не менять' },
+                { value: 'done', label: 'Отметить выполненным' },
+                { value: 'undone', label: 'Снять отметку' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="update_text" valuePropName="checked">
+            <Checkbox>Изменить значение / комментарий</Checkbox>
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, next) => prev.update_text !== next.update_text}>
+            {({ getFieldValue }) => getFieldValue('update_text') ? (
+              <Form.Item name="text_value" label="Значение">
+                <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} placeholder="Комментарий / данные" />
+              </Form.Item>
+            ) : null}
           </Form.Item>
         </Form>
       </Modal>

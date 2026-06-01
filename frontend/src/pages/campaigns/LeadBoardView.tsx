@@ -12,7 +12,7 @@ import {
   useDroppable,
 } from '@dnd-kit/core';
 import {
-  Row, Col, Statistic, Card, Tag, Input, Select, Space, Progress, Tabs, Switch, Typography, App, Checkbox, Alert, Button,
+  Row, Col, Statistic, Card, Tag, Input, Select, Space, Progress, Tabs, Switch, Typography, App, Checkbox, Button, Modal, Form,
 } from 'antd';
 import {
   TeamOutlined, CheckCircleOutlined, StopOutlined, SearchOutlined,
@@ -21,7 +21,8 @@ import {
 } from '@ant-design/icons';
 import TaskEditDrawer from '../../components/TaskEditDrawer';
 import KanbanColumnHeader from '../../components/KanbanColumnHeader';
-import { useFunnel, usePatchLead } from '../../api/hooks';
+import BulkSelectionToolbar from '../../components/BulkSelectionToolbar';
+import { useFunnel, usePatchLead, useBulkUpdateLeads, useBulkDeleteLeads } from '../../api/hooks';
 import type { CampaignDetail, Lead, LeadPrimaryContactBrief } from '../../types';
 import { toggleItemSelection } from '../../utils/kanbanSelection';
 import ContactPreviewModal from '../../components/ContactPreviewModal';
@@ -112,6 +113,9 @@ function LeadCardFace({
       <div className="kanban-card-tags">
         {region && (
           <Tag>{region}</Tag>
+        )}
+        {l.forwarded_from && (
+          <Tag color="gold">Передано от: {l.forwarded_from}</Tag>
         )}
         {(l.tag_names || []).map((name) => (
           <Tag key={name} color="cyan">{name}</Tag>
@@ -343,6 +347,8 @@ export default function LeadBoardView({ campaign }: Props) {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const patchLead = usePatchLead();
+  const bulkUpdateLeads = useBulkUpdateLeads();
+  const bulkDeleteLeads = useBulkDeleteLeads();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
@@ -366,6 +372,8 @@ export default function LeadBoardView({ campaign }: Props) {
     leadId: number;
     leadName: string;
   } | null>(null);
+  const [bulkStageModalOpen, setBulkStageModalOpen] = useState(false);
+  const [bulkStageForm] = Form.useForm();
 
   const funnelId = campaign.campaign_funnels?.[0]?.funnel;
   const { data: funnelDetail } = useFunnel(funnelId!);
@@ -382,6 +390,48 @@ export default function LeadBoardView({ campaign }: Props) {
 
   function clearLeadSelection() {
     setSelectedLeadIds([]);
+  }
+
+  const bulkBusy = bulkUpdateLeads.isPending || bulkDeleteLeads.isPending || patchLead.isPending;
+
+  const stageOptions = useMemo(
+    () => [...(funnelDetail?.stages || [])]
+      .sort((a, b) => a.order - b.order)
+      .map((s) => ({ value: s.id, label: s.name })),
+    [funnelDetail],
+  );
+
+  async function runBulkMoveStage() {
+    if (!selectedLeadIds.length) return;
+    try {
+      const vals = await bulkStageForm.validateFields();
+      const result = await bulkUpdateLeads.mutateAsync({
+        ids: selectedLeadIds,
+        current_stage: vals.current_stage ?? null,
+      });
+      const skipped = result.skipped?.length || 0;
+      if (skipped > 0) {
+        message.warning(`Обновлено: ${result.updated}. Пропущено: ${skipped}.`);
+      } else {
+        message.success(`Обновлено лидов: ${result.updated ?? 0}`);
+      }
+      setBulkStageModalOpen(false);
+      bulkStageForm.resetFields();
+      clearLeadSelection();
+    } catch {
+      message.error('Не удалось перенести лидов');
+    }
+  }
+
+  async function runBulkDelete() {
+    if (!selectedLeadIds.length) return;
+    try {
+      const result = await bulkDeleteLeads.mutateAsync(selectedLeadIds);
+      message.success(`Удалено лидов: ${result.deleted ?? 0}`);
+      clearLeadSelection();
+    } catch {
+      message.error('Не удалось удалить лидов');
+    }
   }
 
   const leads = campaign.leads || [];
@@ -503,7 +553,7 @@ export default function LeadBoardView({ campaign }: Props) {
     );
   }
 
-  const dragDisabled = patchLead.isPending;
+  const dragDisabled = bulkBusy;
 
   return (
     <div>
@@ -556,16 +606,15 @@ export default function LeadBoardView({ campaign }: Props) {
       )}
 
       {selectedLeadIds.length > 0 && (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message={<Typography.Text strong>Выбрано лидов: {selectedLeadIds.length}</Typography.Text>}
-          action={
-            <Button size="small" type="link" onClick={clearLeadSelection}>
-              Снять выбор
-            </Button>
-          }
+        <BulkSelectionToolbar
+          count={selectedLeadIds.length}
+          entityLabel="лидов"
+          busy={bulkBusy}
+          onMoveStage={() => setBulkStageModalOpen(true)}
+          moveStageLabel="Стадия…"
+          onDelete={runBulkDelete}
+          deleteConfirmTitle={`Удалить ${selectedLeadIds.length} лидов?`}
+          onClearSelection={clearLeadSelection}
         />
       )}
 
@@ -701,6 +750,25 @@ export default function LeadBoardView({ campaign }: Props) {
         leadName={editingTask?.leadName}
         onClose={() => setEditingTask(null)}
       />
+
+      <Modal
+        title="Перенести лидов на стадию"
+        open={bulkStageModalOpen}
+        onCancel={() => { setBulkStageModalOpen(false); bulkStageForm.resetFields(); }}
+        onOk={runBulkMoveStage}
+        confirmLoading={bulkUpdateLeads.isPending}
+        destroyOnClose
+      >
+        <Form form={bulkStageForm} layout="vertical">
+          <Form.Item name="current_stage" label="Стадия">
+            <Select
+              allowClear
+              options={stageOptions}
+              placeholder="Без стадии"
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

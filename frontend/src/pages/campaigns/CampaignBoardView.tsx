@@ -11,17 +11,18 @@ import {
   useDraggable,
   useDroppable,
 } from '@dnd-kit/core';
-import { Row, Col, Statistic, Card, Tag, Input, Select, Space, Spin, Alert, Button, App, Checkbox, Typography } from 'antd';
+import { Row, Col, Statistic, Card, Tag, Input, Select, Space, Spin, Alert, Button, App, Checkbox, Typography, Modal, Form } from 'antd';
 import {
   TeamOutlined, RocketOutlined, AppstoreOutlined, AimOutlined, SearchOutlined,
   CalendarOutlined,
 } from '@ant-design/icons';
-import { useCampaigns, usePatchCampaign, useOrganizationTags } from '../../api/hooks';
+import { useCampaigns, usePatchCampaign, useOrganizationTags, useBulkUpdateCampaigns, useBulkDeleteCampaigns } from '../../api/hooks';
 import { getAxiosErrorMessage } from '../../api/errorMessage';
 import type { Campaign } from '../../types';
 import DemandQuotaPreview from '../../components/DemandQuotaPreview';
 import EntityTagSelect from '../../components/EntityTagSelect';
 import KanbanColumnHeader from '../../components/KanbanColumnHeader';
+import BulkSelectionToolbar from '../../components/BulkSelectionToolbar';
 import { toggleItemSelection } from '../../utils/kanbanSelection';
 import './BoardStyles.css';
 
@@ -124,6 +125,11 @@ const BOARD_COLUMNS: { key: BoardColumnKey; label: string; columnClass: string }
   { key: 'completed', label: 'Завершена', columnClass: 'status-completed' },
 ];
 
+const BOARD_COLUMN_OPTIONS = BOARD_COLUMNS.map((col) => ({
+  value: col.key,
+  label: col.label,
+}));
+
 function resolveCampaignBoardColumn(campaign: Campaign): BoardColumnKey {
   if (campaign.status === 'active' && campaign.operational_stage === 'organization_list') {
     return 'organization_list';
@@ -215,7 +221,11 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
   const navigate = useNavigate();
   const { message } = App.useApp();
   const patchCampaign = usePatchCampaign();
+  const bulkUpdateCampaigns = useBulkUpdateCampaigns();
+  const bulkDeleteCampaigns = useBulkDeleteCampaigns();
   const { data: tagsCatalog } = useOrganizationTags({ page_size: 500, tag_type: 'campaigns' });
+  const [bulkStageModalOpen, setBulkStageModalOpen] = useState(false);
+  const [bulkStageForm] = Form.useForm();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
@@ -236,6 +246,41 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
 
   function clearCampaignSelection() {
     setSelectedCampaignIds([]);
+  }
+
+  const bulkBusy = bulkUpdateCampaigns.isPending || bulkDeleteCampaigns.isPending || patchCampaign.isPending;
+
+  async function runBulkMoveStage() {
+    if (!selectedCampaignIds.length) return;
+    try {
+      const vals = await bulkStageForm.validateFields();
+      const result = await bulkUpdateCampaigns.mutateAsync({
+        ids: selectedCampaignIds,
+        board_column: vals.board_column,
+      });
+      const skipped = result.skipped?.length || 0;
+      if (skipped > 0) {
+        message.warning(`Обновлено: ${result.updated}. Пропущено: ${skipped}.`);
+      } else {
+        message.success(`Обновлено кампаний: ${result.updated ?? 0}`);
+      }
+      setBulkStageModalOpen(false);
+      bulkStageForm.resetFields();
+      clearCampaignSelection();
+    } catch {
+      message.error('Не удалось перенести кампании');
+    }
+  }
+
+  async function runBulkDelete() {
+    if (!selectedCampaignIds.length) return;
+    try {
+      const result = await bulkDeleteCampaigns.mutateAsync(selectedCampaignIds);
+      message.success(`Удалено кампаний: ${result.deleted ?? 0}`);
+      clearCampaignSelection();
+    } catch {
+      message.error('Не удалось удалить кампании');
+    }
   }
 
   const { data, isLoading, isError, error, refetch } = useCampaigns({
@@ -327,7 +372,7 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
     );
   }
 
-  const dragDisabled = patchCampaign.isPending;
+  const dragDisabled = bulkBusy;
 
   if (isLoading) return <div style={{ textAlign: 'center', paddingTop: 60 }}><Spin size="large" /></div>;
 
@@ -401,16 +446,15 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
       </Space>
 
       {selectedCampaignIds.length > 0 && (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message={<Typography.Text strong>Выбрано кампаний: {selectedCampaignIds.length}</Typography.Text>}
-          action={
-            <Button size="small" type="link" onClick={clearCampaignSelection}>
-              Снять выбор
-            </Button>
-          }
+        <BulkSelectionToolbar
+          count={selectedCampaignIds.length}
+          entityLabel="кампаний"
+          busy={bulkBusy}
+          onMoveStage={() => setBulkStageModalOpen(true)}
+          moveStageLabel="Стадия…"
+          onDelete={runBulkDelete}
+          deleteConfirmTitle={`Удалить ${selectedCampaignIds.length} кампаний?`}
+          onClearSelection={clearCampaignSelection}
         />
       )}
 
@@ -465,6 +509,21 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
           ) : null}
         </DragOverlay>
       </DndContext>
+
+      <Modal
+        title="Перенести кампании на стадию"
+        open={bulkStageModalOpen}
+        onCancel={() => { setBulkStageModalOpen(false); bulkStageForm.resetFields(); }}
+        onOk={runBulkMoveStage}
+        confirmLoading={bulkUpdateCampaigns.isPending}
+        destroyOnClose
+      >
+        <Form form={bulkStageForm} layout="vertical">
+          <Form.Item name="board_column" label="Стадия" rules={[{ required: true, message: 'Выберите стадию' }]}>
+            <Select options={BOARD_COLUMN_OPTIONS} placeholder="Стадия на доске" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

@@ -102,6 +102,37 @@ const initialData: CampaignFormData = {
   tagIds: [],
 };
 
+const COLLECT_STAGE_STORAGE_PREFIX = 'campaign-hasCollectStage-';
+
+function getStoredHasCollectStage(campaignId: number | null): boolean | null {
+  try {
+    const value = sessionStorage.getItem(`${COLLECT_STAGE_STORAGE_PREFIX}${campaignId ?? 'new'}`);
+    if (value === null) return null;
+    return value === 'true';
+  } catch {
+    return null;
+  }
+}
+
+function setStoredHasCollectStage(campaignId: number | null, value: boolean) {
+  try {
+    sessionStorage.setItem(`${COLLECT_STAGE_STORAGE_PREFIX}${campaignId ?? 'new'}`, String(value));
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+function inferHasCollectStage(
+  collectSearchTask: string | null | undefined,
+  regionsCount: number,
+  campaignId: number | null,
+): boolean {
+  if (collectSearchTask?.trim()) return true;
+  if (regionsCount > 0) return true;
+  const stored = getStoredHasCollectStage(campaignId);
+  return stored ?? false;
+}
+
 function getStepTitles(hasCollectStage: boolean) {
   return ['Основное', 'Программы', hasCollectStage ? 'Регионы' : 'Организации', 'Распределение', 'Обзор'];
 }
@@ -182,10 +213,7 @@ function getStepValid(fd: CampaignFormData): boolean[] {
     !!(fd.name.trim() && fd.federal_operator_ids.length > 0 && fd.selectedFunnels.length > 0),
     fd.selectedPrograms.length >= 1,
     fd.hasCollectStage
-      ? (
-        fd.regionData.length >= 1
-        && fd.regionData.every((r) => (r.search_task || '').trim().length > 0)
-      )
+      ? fd.regionData.length >= 1
       : (fd.selectedExternalOrgs.length >= 1 && !hasFederalWithoutRegions),
     true,
     true,
@@ -203,7 +231,10 @@ export default function CampaignCreatePage() {
   const createCampaign = useCreateCampaign();
 
   const [currentStep, setCurrentStep] = useState(0);
-  const [formData, setFormData] = useState<CampaignFormData>(initialData);
+  const [formData, setFormData] = useState<CampaignFormData>(() => ({
+    ...initialData,
+    hasCollectStage: getStoredHasCollectStage(null) ?? false,
+  }));
   const [campaignId, setCampaignId] = useState<number | null>(editId ? Number(editId) : null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [submitting, setSubmitting] = useState(false);
@@ -335,6 +366,12 @@ export default function CampaignCreatePage() {
       }
     }
 
+    const hasCollectStage = inferHasCollectStage(
+        existingCampaign.collect_search_task,
+        existingCampaign.campaign_regions?.length ?? 0,
+        Number(editId),
+      );
+    setStoredHasCollectStage(Number(editId), hasCollectStage);
     setFormData({
       name: existingCampaign.name,
       federal_operator: existingCampaign.federal_operator,
@@ -354,13 +391,16 @@ export default function CampaignCreatePage() {
             name: q.name,
             start_date: q.start_date,
             end_date: q.end_date,
-            stage_deadlines: [],
+            stage_deadlines: (q.stage_deadlines || []).map((sd) => ({
+              funnel_stage_id: sd.funnel_stage,
+              deadline_days: sd.deadline_days,
+            })),
           }))
         : initialData.queues,
       regionData: existingCampaign.campaign_regions?.map((cr) => {
         const queueNumber = cr.queue
-          ? (existingCampaign.queues?.find((q) => q.id === cr.queue)?.queue_number ?? null)
-          : null;
+          ? (existingCampaign.queues?.find((q) => q.id === cr.queue)?.queue_number ?? 1)
+          : 1;
         return {
           region_id: cr.region,
           queue_number: queueNumber,
@@ -371,10 +411,7 @@ export default function CampaignCreatePage() {
         };
       }) ?? [],
       collectSearchTask: existingCampaign.collect_search_task ?? '',
-      hasCollectStage: !!(
-        (existingCampaign.collect_search_task && existingCampaign.collect_search_task.trim())
-        || (existingCampaign.campaign_regions?.length ?? 0) > 0
-      ),
+      hasCollectStage,
       selectedOrganizations: [],
       selectedExternalOrgs,
       federalOrgRegionSelections,
@@ -398,10 +435,25 @@ export default function CampaignCreatePage() {
   campaignIdRef.current = campaignId;
 
   const nameTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const basicSaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const skipBasicAutosaveRef = useRef(true);
 
   const updateFormData = (partial: Partial<CampaignFormData>) => {
+    if ('hasCollectStage' in partial) {
+      setStoredHasCollectStage(campaignIdRef.current, !!partial.hasCollectStage);
+    }
     setFormData((prev) => ({ ...prev, ...partial }));
   };
+
+  useEffect(() => {
+    if (!campaignId) return;
+    const idKey = `${COLLECT_STAGE_STORAGE_PREFIX}${campaignId}`;
+    const newKey = `${COLLECT_STAGE_STORAGE_PREFIX}new`;
+    const draftValue = sessionStorage.getItem(newKey);
+    if (draftValue !== null && sessionStorage.getItem(idKey) === null) {
+      sessionStorage.setItem(idKey, draftValue);
+    }
+  }, [campaignId]);
 
   // Auto-create draft when name is entered (debounced 700ms) — only in create mode
   useEffect(() => {
@@ -424,6 +476,7 @@ export default function CampaignCreatePage() {
           tags: formData.tagIds?.length ? formData.tagIds : undefined,
         });
         setCampaignId(result.id);
+        navigate(`/campaigns/${result.id}/edit`, { replace: true });
         setSaveStatus('saved');
         setTimeout(() => setSaveStatus('idle'), 2000);
       } catch {
@@ -433,6 +486,51 @@ export default function CampaignCreatePage() {
 
     return () => clearTimeout(nameTimerRef.current);
   }, [formData.name]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-save основных полей (шаг 0), чтобы выбор ФО и др. сохранялся при перезагрузке
+  useEffect(() => {
+    if (!campaignId) return;
+    if (isEditMode && !initialLoaded) return;
+    if (skipBasicAutosaveRef.current) {
+      skipBasicAutosaveRef.current = false;
+      return;
+    }
+    clearTimeout(basicSaveTimerRef.current);
+    basicSaveTimerRef.current = setTimeout(async () => {
+      try {
+        setSaveStatus('saving');
+        await updateCampaign.mutateAsync({
+          name: formData.name,
+          federal_operator: formData.federal_operator,
+          federal_operator_ids: formData.federal_operator_ids,
+          project: formData.project,
+          acting_organization: formData.acting_organization,
+          collect_search_task: formData.collectSearchTask,
+          hypothesis: formData.hypothesis,
+          funnel_ids: formData.selectedFunnels,
+          tags: formData.tagIds,
+        });
+        setSaveStatus('saved');
+        setTimeout(() => setSaveStatus('idle'), 2000);
+      } catch {
+        setSaveStatus('idle');
+      }
+    }, 800);
+    return () => clearTimeout(basicSaveTimerRef.current);
+  }, [
+    campaignId,
+    initialLoaded,
+    isEditMode,
+    formData.name,
+    formData.federal_operator,
+    formData.federal_operator_ids,
+    formData.project,
+    formData.acting_organization,
+    formData.collectSearchTask,
+    formData.hypothesis,
+    formData.selectedFunnels,
+    formData.tagIds,
+  ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build PATCH payload for the given step (accumulates all steps up to current)
   const buildPatchPayload = (fd: CampaignFormData, upToStep: number) => {
@@ -461,7 +559,11 @@ export default function CampaignCreatePage() {
         stage_deadlines: q.stage_deadlines,
       }));
       if (fd.hasCollectStage) {
-        payload.region_data = fd.regionData;
+        payload.region_data = fd.regionData.map((rd) => ({
+          ...rd,
+          queue_number: rd.queue_number ?? 1,
+          search_task: rd.search_task?.trim() || fd.collectSearchTask?.trim() || '',
+        }));
         payload.lead_data = [];
       } else {
         payload.lead_data = buildLeadData(fd, false);
@@ -551,7 +653,11 @@ export default function CampaignCreatePage() {
           stage_deadlines: q.stage_deadlines,
         })),
         program_ids: formData.selectedPrograms,
-        region_data: formData.regionData,
+        region_data: formData.regionData.map((rd) => ({
+          ...rd,
+          queue_number: rd.queue_number ?? 1,
+          search_task: rd.search_task?.trim() || formData.collectSearchTask?.trim() || '',
+        })),
         organization_ids: formData.selectedOrganizations,
         lead_data: leadData,
         manager_assignments: formData.managerAssignments,
@@ -681,7 +787,7 @@ export default function CampaignCreatePage() {
                 const missingSteps = [
                   'Основное (название, ФО, воронка)',
                   'Программы (мин. 1)',
-                  formData.hasCollectStage ? 'Регионы (мин. 1 + задание на поиск)' : 'Организации (мин. 1)',
+                  formData.hasCollectStage ? 'Регионы (мин. 1)' : 'Организации (мин. 1)',
                 ]
                   .filter((_, i) => !valid[i]);
                 return (

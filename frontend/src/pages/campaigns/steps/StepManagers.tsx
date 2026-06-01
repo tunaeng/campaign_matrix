@@ -15,6 +15,14 @@ interface Props {
   onChange: (partial: Partial<CampaignFormData>) => void;
 }
 
+interface RegionAssignmentRow {
+  region_id: number;
+  queue_number: number | null;
+  manager_id: number | null;
+  specialist_id?: number | null;
+  demand_quota?: number;
+}
+
 const MAX_VISIBLE_TAGS = 3;
 
 type DemandStatus = 'demanded' | 'not_demanded' | 'unknown';
@@ -182,6 +190,10 @@ export default function StepManagers({ data, onChange }: Props) {
   // per-ФО prof_activity draft: key = `${queueNum}__${fedDistrict}`
   const [foActivityDraft, setFoActivityDraft] = useState<Record<string, string | undefined>>({});
   const [expandedView, setExpandedView] = useState(false);
+  const [regionSelection, setRegionSelection] = useState<number[]>([]);
+  const [bulkQuota, setBulkQuota] = useState<number | undefined>(undefined);
+  const [bulkManagerId, setBulkManagerId] = useState<number | null | undefined>(undefined);
+  const [bulkSpecialistId, setBulkSpecialistId] = useState<number | null | undefined>(undefined);
 
   const allPrograms = programsData?.results || [];
 
@@ -328,6 +340,11 @@ export default function StepManagers({ data, onChange }: Props) {
     data.federalOrgRegionSelections,
     data.orgDistribution,
   ]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const validIds = new Set((data.regionData || []).map((r) => r.region_id));
+    setRegionSelection((prev) => prev.filter((id) => validIds.has(id)));
+  }, [data.regionData]);
 
   const updateLeadForecast = (orgId: number, regionId: number | null, value: number | null) => {
     onChange({
@@ -598,6 +615,9 @@ export default function StepManagers({ data, onChange }: Props) {
   }));
 
   if (data.hasCollectStage) {
+    const allRegionIds = (data.regionData || []).map((r) => r.region_id);
+    const selectedRegionIds = regionSelection.length > 0 ? regionSelection : allRegionIds;
+
     const updateRegionField = (
       regionId: number,
       field: 'queue_number' | 'manager_id' | 'specialist_id' | 'demand_quota',
@@ -611,6 +631,31 @@ export default function StepManagers({ data, onChange }: Props) {
       onChange({ regionData: next });
     };
 
+    const applyBulkValues = (regionIds: number[]) => {
+      if (regionIds.length === 0) return;
+      const ids = new Set(regionIds);
+      const next = (data.regionData || []).map((r) => {
+        if (!ids.has(r.region_id)) return r;
+        return {
+          ...r,
+          ...(bulkQuota !== undefined ? { demand_quota: bulkQuota ?? 0 } : {}),
+          ...(bulkManagerId !== undefined ? { manager_id: bulkManagerId } : {}),
+          ...(bulkSpecialistId !== undefined ? { specialist_id: bulkSpecialistId } : {}),
+        };
+      });
+      onChange({ regionData: next });
+    };
+
+    const applyBulkToSelected = () => {
+      if (selectedRegionIds.length === 0) return;
+      applyBulkValues(selectedRegionIds);
+    };
+
+    const applyBulkToAll = () => {
+      if (allRegionIds.length === 0) return;
+      applyBulkValues(allRegionIds);
+    };
+
     return (
       <div>
         <Typography.Title level={5}>Распределение регионов</Typography.Title>
@@ -618,6 +663,81 @@ export default function StepManagers({ data, onChange }: Props) {
           Для стадии «Сбор и добавление лидов» назначьте ответственного менеджера и
           специалиста по первичному контакту на каждый регион.
         </Typography.Text>
+        <Card size="small" style={{ marginBottom: 12 }}>
+          <Space wrap align="end" style={{ width: '100%' }}>
+            <div>
+              <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>
+                Квота
+              </Typography.Text>
+              <InputNumber
+                min={0}
+                size="small"
+                style={{ width: 140 }}
+                placeholder="Квота"
+                value={bulkQuota}
+                onChange={(v) => setBulkQuota(v ?? undefined)}
+              />
+            </div>
+            <div>
+              <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>
+                Менеджер
+              </Typography.Text>
+              <Select
+                allowClear
+                size="small"
+                style={{ width: 240 }}
+                placeholder="Менеджер"
+                value={bulkManagerId ?? undefined}
+                options={userOptions}
+                onChange={(v) => setBulkManagerId(v ?? null)}
+              />
+            </div>
+            <div>
+              <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>
+                Специалист
+              </Typography.Text>
+              <Select
+                allowClear
+                size="small"
+                style={{ width: 280 }}
+                placeholder="Специалист по первичному контакту"
+                value={bulkSpecialistId ?? undefined}
+                options={userOptions}
+                onChange={(v) => setBulkSpecialistId(v ?? null)}
+              />
+            </div>
+            <Button
+              size="small"
+              onClick={applyBulkToSelected}
+              disabled={
+                selectedRegionIds.length === 0
+                || (bulkQuota === undefined && bulkManagerId === undefined && bulkSpecialistId === undefined)
+              }
+            >
+              Применить к выбранным ({selectedRegionIds.length})
+            </Button>
+            <Button
+              size="small"
+              type="primary"
+              onClick={applyBulkToAll}
+              disabled={
+                allRegionIds.length === 0
+                || (bulkQuota === undefined && bulkManagerId === undefined && bulkSpecialistId === undefined)
+              }
+            >
+              Применить ко всем ({allRegionIds.length})
+            </Button>
+            <Button size="small" onClick={() => setRegionSelection(allRegionIds)} disabled={allRegionIds.length === 0}>
+              Выбрать все
+            </Button>
+            <Button size="small" onClick={() => setRegionSelection([])} disabled={regionSelection.length === 0}>
+              Сбросить выбор
+            </Button>
+          </Space>
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+            Если регионы не выбраны явно, действие применяется ко всем строкам таблицы.
+          </Typography.Text>
+        </Card>
         <Card size="small" style={{ marginBottom: 16 }}>
           {data.regionData.length === 0 ? (
             <Typography.Text type="secondary">
@@ -629,6 +749,10 @@ export default function StepManagers({ data, onChange }: Props) {
               rowKey="region_id"
               pagination={false}
               dataSource={data.regionData}
+              rowSelection={{
+                selectedRowKeys: regionSelection,
+                onChange: (keys) => setRegionSelection(keys as number[]),
+              }}
               columns={[
                 {
                   title: 'Регион',
@@ -640,7 +764,7 @@ export default function StepManagers({ data, onChange }: Props) {
                   title: 'Очередь',
                   key: 'queue_number',
                   width: 170,
-                  render: (_: unknown, row: { region_id: number; queue_number: number | null }) => (
+                  render: (_: unknown, row: RegionAssignmentRow) => (
                     <Select
                       size="small"
                       style={{ width: '100%' }}
@@ -657,7 +781,7 @@ export default function StepManagers({ data, onChange }: Props) {
                   title: 'Квота, чел.',
                   key: 'demand_quota',
                   width: 140,
-                  render: (_: unknown, row: { region_id: number; demand_quota?: number }) => (
+                  render: (_: unknown, row: RegionAssignmentRow) => (
                     <InputNumber
                       min={0}
                       size="small"
@@ -671,7 +795,7 @@ export default function StepManagers({ data, onChange }: Props) {
                   title: 'Менеджер',
                   key: 'manager_id',
                   width: 260,
-                  render: (_: unknown, row: any) => (
+                  render: (_: unknown, row: RegionAssignmentRow) => (
                     <Select
                       allowClear
                       size="small"
@@ -686,7 +810,7 @@ export default function StepManagers({ data, onChange }: Props) {
                   title: 'Специалист по первичному контакту',
                   key: 'specialist_id',
                   width: 300,
-                  render: (_: unknown, row: any) => (
+                  render: (_: unknown, row: RegionAssignmentRow) => (
                     <Select
                       allowClear
                       size="small"

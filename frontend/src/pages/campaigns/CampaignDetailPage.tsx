@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Descriptions, Tag, Tabs, Table, Spin, Typography,
-  Button, Space, Statistic, Row, Col, Select, App, Progress, Segmented, InputNumber, Tooltip, Modal, Upload,
+  Button, Space, Statistic, Row, Col, Select, App, Progress, Segmented, InputNumber, Tooltip, Modal, Upload, Form,
 } from 'antd';
 import { ArrowLeftOutlined, AppstoreOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
-import { useCampaign, useUpdateCampaign, useDeleteCampaign, useOrganizationTags } from '../../api/hooks';
+import { useCampaign, useUpdateCampaign, useDeleteCampaign, useOrganizationTags, useFunnel, useBulkUpdateLeads, useBulkDeleteLeads } from '../../api/hooks';
 import type { CampaignDetail, CampaignOrganization, Lead, LeadPrimaryContactBrief, OrganizationTag } from '../../types';
 import { daysSinceLastTouch } from '../../utils/leadTouch';
 import client from '../../api/client';
@@ -14,6 +14,7 @@ import LeadBoardView from './LeadBoardView';
 import ContactPreviewModal from '../../components/ContactPreviewModal';
 import DemandQuotaPreview from '../../components/DemandQuotaPreview';
 import EntityTagSelect, { renderTagChips } from '../../components/EntityTagSelect';
+import BulkSelectionToolbar from '../../components/BulkSelectionToolbar';
 import type { UploadFile } from 'antd/es/upload/interface';
 
 const statusColors: Record<string, string> = {
@@ -52,6 +53,22 @@ export default function CampaignDetailPage() {
   const [leadDemandImportOpen, setLeadDemandImportOpen] = useState(false);
   const [leadDemandImportFiles, setLeadDemandImportFiles] = useState<UploadFile[]>([]);
   const [leadDemandImportBusy, setLeadDemandImportBusy] = useState(false);
+  const [selectedLeadIds, setSelectedLeadIds] = useState<number[]>([]);
+  const [bulkStageModalOpen, setBulkStageModalOpen] = useState(false);
+  const [bulkStageForm] = Form.useForm();
+  const bulkUpdateLeads = useBulkUpdateLeads();
+  const bulkDeleteLeads = useBulkDeleteLeads();
+  const funnelId = campaign?.campaign_funnels?.[0]?.funnel;
+  const { data: funnelDetail } = useFunnel(funnelId ?? 0);
+
+  const leadStageOptions = useMemo(
+    () => [...(funnelDetail?.stages || [])]
+      .sort((a, b) => a.order - b.order)
+      .map((s) => ({ value: s.id, label: s.name })),
+    [funnelDetail],
+  );
+
+  const leadBulkBusy = bulkUpdateLeads.isPending || bulkDeleteLeads.isPending;
 
   const uniqueManagers = useMemo(() => {
     if (!campaign) return [];
@@ -165,6 +182,39 @@ export default function CampaignDetailPage() {
     return { start, end };
   }, [campaign]);
 
+  async function runLeadBulkMoveStage() {
+    if (!selectedLeadIds.length) return;
+    try {
+      const vals = await bulkStageForm.validateFields();
+      const result = await bulkUpdateLeads.mutateAsync({
+        ids: selectedLeadIds,
+        current_stage: vals.current_stage ?? null,
+      });
+      const skipped = result.skipped?.length || 0;
+      if (skipped > 0) {
+        message.warning(`Обновлено: ${result.updated}. Пропущено: ${skipped}.`);
+      } else {
+        message.success(`Обновлено лидов: ${result.updated ?? 0}`);
+      }
+      setBulkStageModalOpen(false);
+      bulkStageForm.resetFields();
+      setSelectedLeadIds([]);
+    } catch {
+      message.error('Не удалось перенести лидов');
+    }
+  }
+
+  async function runLeadBulkDelete() {
+    if (!selectedLeadIds.length) return;
+    try {
+      const result = await bulkDeleteLeads.mutateAsync(selectedLeadIds);
+      message.success(`Удалено лидов: ${result.deleted ?? 0}`);
+      setSelectedLeadIds([]);
+    } catch {
+      message.error('Не удалось удалить лидов');
+    }
+  }
+
   if (isLoading) return <div style={{ textAlign: 'center', paddingTop: 100 }}><Spin size="large" /></div>;
   if (!campaign) return <Typography.Text>Кампания не найдена</Typography.Text>;
 
@@ -273,7 +323,14 @@ export default function CampaignDetailPage() {
       dataIndex: 'organization_name',
       key: 'name',
       render: (text: string, record: Lead) => (
-        <a onClick={() => navigate(`/campaigns/${id}/leads/${record.id}`)}>{text}</a>
+        <div>
+          <a onClick={() => navigate(`/campaigns/${id}/leads/${record.id}`)}>{text}</a>
+          {record.forwarded_from && (
+            <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+              Передано от: {record.forwarded_from}
+            </Typography.Text>
+          )}
+        </div>
       ),
     },
     {
@@ -456,13 +513,36 @@ export default function CampaignDetailPage() {
           {leadsView === 'board' && campaignForLeadsView ? (
             <LeadBoardView campaign={campaignForLeadsView} />
           ) : leadsView === 'table' ? (
-            <Table
-              dataSource={leadsAfterFilters}
-              columns={leadColumns}
-              rowKey="id"
-              size="small"
-              pagination={{ pageSize: 20 }}
-            />
+            <>
+              {selectedLeadIds.length > 0 && (
+                <BulkSelectionToolbar
+                  count={selectedLeadIds.length}
+                  entityLabel="лидов"
+                  busy={leadBulkBusy}
+                  onMoveStage={() => setBulkStageModalOpen(true)}
+                  moveStageLabel="Стадия…"
+                  onDelete={runLeadBulkDelete}
+                  deleteConfirmTitle={`Удалить ${selectedLeadIds.length} лидов?`}
+                  onClearSelection={() => setSelectedLeadIds([])}
+                />
+              )}
+              <Table
+                dataSource={leadsAfterFilters}
+                columns={leadColumns}
+                rowKey="id"
+                size="small"
+                pagination={{ pageSize: 20 }}
+                rowSelection={{
+                  selectedRowKeys: selectedLeadIds,
+                  onChange: (keys) => {
+                    if (leadBulkBusy) return;
+                    setSelectedLeadIds(keys as number[]);
+                  },
+                  getCheckboxProps: () => ({ disabled: leadBulkBusy }),
+                  selections: [Table.SELECTION_ALL, Table.SELECTION_INVERT, Table.SELECTION_NONE],
+                }}
+              />
+            </>
           ) : null}
         </div>
       ),
@@ -716,6 +796,21 @@ export default function CampaignDetailPage() {
             по всем пунктам чек-листа (информативно). Для импорта обновляются: План, Заявленная и Списочная (факт).
           </Typography.Text>
         </Space>
+      </Modal>
+
+      <Modal
+        title="Перенести лидов на стадию"
+        open={bulkStageModalOpen}
+        onCancel={() => { setBulkStageModalOpen(false); bulkStageForm.resetFields(); }}
+        onOk={runLeadBulkMoveStage}
+        confirmLoading={bulkUpdateLeads.isPending}
+        destroyOnClose
+      >
+        <Form form={bulkStageForm} layout="vertical">
+          <Form.Item name="current_stage" label="Стадия">
+            <Select allowClear options={leadStageOptions} placeholder="Без стадии" />
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   );

@@ -1,15 +1,17 @@
-import { Column, Line, Pie } from '@ant-design/charts';
+import { Column, Pie } from '@ant-design/charts';
 import { Card, Col, Collapse, DatePicker, Empty, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd';
-import dayjs, { type Dayjs } from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useCampaigns, useFunnels, useUsers, useWorkloadDashboard } from '../../api/hooks';
-import { workloadStatusLabel, workloadStatusPieData } from '../../utils/workloadDashboardLabels';
+import { workloadStatusLabel, workloadStatusPieData, workloadActivityChartData, WORKLOAD_ACTIVITY_GROUP_OPTIONS, WORKLOAD_STATUS_CHART_COLORS, WORKLOAD_STATUS_CHART_LABELS, type WorkloadActivityGroup } from '../../utils/workloadDashboardLabels';
+import { normalizeTaskStatus, TASK_WORKFLOW_STATUSES } from '../../utils/taskStatusLabels';
 import type {
   WorkloadDashboardManager,
   WorkloadDashboardRow,
   WorkloadDashboardSpecialist,
   WorkloadDashboardSpecialistCampaign,
+  WorkloadDashboardSpecialistTemplate,
   WorkloadDashboardSpecialistTask,
   WorkloadDashboardTaskStats,
 } from '../../types';
@@ -23,21 +25,23 @@ const roleColor: Record<string, string> = {
 
 const emptyTaskStats: WorkloadDashboardTaskStats = {
   total: 0,
-  todo: 0,
+  backlog: 0,
   in_progress: 0,
-  blocked: 0,
+  paused: 0,
+  rejected: 0,
   done: 0,
   overdue: 0,
 };
 
-const TASK_STAT_KEYS = ['todo', 'in_progress', 'blocked', 'done'] as const;
+const TASK_STAT_KEYS = ['backlog', 'in_progress', 'paused', 'rejected', 'done'] as const;
 
 function computeStatsFromTasks(tasks: WorkloadDashboardSpecialistTask[]): WorkloadDashboardTaskStats {
   const stats = { ...emptyTaskStats };
   for (const task of tasks) {
     stats.total += 1;
-    if (TASK_STAT_KEYS.includes(task.status as (typeof TASK_STAT_KEYS)[number])) {
-      stats[task.status as (typeof TASK_STAT_KEYS)[number]] += 1;
+    const normalized = normalizeTaskStatus(task.status);
+    if (TASK_STAT_KEYS.includes(normalized)) {
+      stats[normalized] += 1;
     }
     if (task.is_overdue) {
       stats.overdue += 1;
@@ -50,9 +54,10 @@ function sumTaskStats(items: WorkloadDashboardTaskStats[]): WorkloadDashboardTas
   return items.reduce(
     (acc, item) => ({
       total: acc.total + (item.total ?? 0),
-      todo: acc.todo + (item.todo ?? 0),
+      backlog: acc.backlog + (item.backlog ?? 0),
       in_progress: acc.in_progress + (item.in_progress ?? 0),
-      blocked: acc.blocked + (item.blocked ?? 0),
+      paused: acc.paused + (item.paused ?? 0),
+      rejected: acc.rejected + (item.rejected ?? 0),
       done: acc.done + (item.done ?? 0),
       overdue: acc.overdue + (item.overdue ?? 0),
     }),
@@ -88,6 +93,13 @@ type SpecialistCampaignStatsRow = {
   campaign_id: number;
   campaign_name: string;
   stats: WorkloadDashboardTaskStats;
+  templates: WorkloadDashboardSpecialistTemplate[];
+};
+
+type SpecialistTemplateStatsRow = {
+  key: string;
+  template_name: string;
+  stats: WorkloadDashboardTaskStats;
 };
 
 function buildSpecialistCampaignRows(specialist: WorkloadDashboardSpecialist): SpecialistCampaignStatsRow[] {
@@ -96,6 +108,7 @@ function buildSpecialistCampaignRows(specialist: WorkloadDashboardSpecialist): S
     campaign_id: campaign.campaign_id,
     campaign_name: campaign.campaign_name,
     stats: resolveCampaignStats(campaign),
+    templates: (campaign.templates || []).filter((tpl) => !!tpl && !!tpl.stats),
   }));
 }
 
@@ -105,14 +118,39 @@ function taskStatsColumns() {
 
   return [
     { title: 'Всего', key: 'total', width: 70, render: cell('total') },
-    { title: 'К выполнению', key: 'todo', width: 110, render: cell('todo') },
+    { title: 'Бэклог', key: 'backlog', width: 90, render: cell('backlog') },
     { title: 'В работе', key: 'in_progress', width: 90, render: cell('in_progress') },
+    { title: 'Пауза', key: 'paused', width: 80, render: cell('paused') },
+    { title: 'Отказ', key: 'rejected', width: 80, render: cell('rejected') },
     { title: 'Готово', key: 'done', width: 80, render: cell('done') },
     {
       title: 'Просрочено',
       key: 'overdue',
       width: 100,
       render: (_: unknown, row: SpecialistCampaignStatsRow) => {
+        const v = row.stats.overdue ?? 0;
+        return v > 0 ? <Typography.Text type="danger">{v}</Typography.Text> : v;
+      },
+    },
+  ];
+}
+
+function templateTaskStatsColumns() {
+  const cell = (key: keyof WorkloadDashboardTaskStats) =>
+    (_: unknown, row: SpecialistTemplateStatsRow) => row.stats[key] ?? 0;
+
+  return [
+    { title: 'Всего', key: 'total', width: 70, render: cell('total') },
+    { title: 'Бэклог', key: 'backlog', width: 90, render: cell('backlog') },
+    { title: 'В работе', key: 'in_progress', width: 90, render: cell('in_progress') },
+    { title: 'Пауза', key: 'paused', width: 80, render: cell('paused') },
+    { title: 'Отказ', key: 'rejected', width: 80, render: cell('rejected') },
+    { title: 'Готово', key: 'done', width: 80, render: cell('done') },
+    {
+      title: 'Просрочено',
+      key: 'overdue',
+      width: 100,
+      render: (_: unknown, row: SpecialistTemplateStatsRow) => {
         const v = row.stats.overdue ?? 0;
         return v > 0 ? <Typography.Text type="danger">{v}</Typography.Text> : v;
       },
@@ -236,6 +274,13 @@ function SpecialistDetail({
   isLoading: boolean;
   specialistRows: WorkloadDashboardRow[];
 }) {
+  const templateRowsForCampaign = (campaign: SpecialistCampaignStatsRow): SpecialistTemplateStatsRow[] =>
+    (campaign.templates || []).map((tpl) => ({
+      key: `${campaign.key}-tpl-${tpl.template_id}`,
+      template_name: tpl.template_name || `Шаблон #${tpl.template_id}`,
+      stats: tpl.stats,
+    }));
+
   return (
     <>
       <Table
@@ -281,6 +326,26 @@ function SpecialistDetail({
                   pagination={campaignRows.length > 10 ? { pageSize: 10 } : false}
                   rowKey="key"
                   dataSource={campaignRows}
+                  expandable={{
+                    rowExpandable: (row) => (row.templates?.length || 0) > 0,
+                    expandedRowRender: (row) => (
+                      <Table
+                        size="small"
+                        pagination={false}
+                        rowKey="key"
+                        dataSource={templateRowsForCampaign(row)}
+                        columns={[
+                          {
+                            title: 'Шаблон задач',
+                            dataIndex: 'template_name',
+                            key: 'template_name',
+                            width: 280,
+                          },
+                          ...templateTaskStatsColumns(),
+                        ]}
+                      />
+                    ),
+                  }}
                   columns={[
                     {
                       title: 'Кампания',
@@ -316,7 +381,8 @@ export default function WorkloadDashboardPage() {
   const [campaign, setCampaign] = useState<number | undefined>(undefined);
   const [funnel, setFunnel] = useState<number | undefined>(undefined);
   const [user, setUser] = useState<number | undefined>(undefined);
-  const [period, setPeriod] = useState<[Dayjs, Dayjs]>([dayjs().startOf('month'), dayjs().endOf('month')]);
+  const [period, setPeriod] = useState<[Dayjs, Dayjs] | null>(null);
+  const [activityGroup, setActivityGroup] = useState<WorkloadActivityGroup>('day');
 
   const { data: campaignsData } = useCampaigns({ page_size: 200 });
   const { data: funnelsData } = useFunnels({ page_size: 200 });
@@ -327,8 +393,12 @@ export default function WorkloadDashboardPage() {
     campaign,
     funnel,
     user,
-    date_from: period[0]?.format('YYYY-MM-DD'),
-    date_to: period[1]?.format('YYYY-MM-DD'),
+    ...(period
+      ? {
+          date_from: period[0].format('YYYY-MM-DD'),
+          date_to: period[1].format('YYYY-MM-DD'),
+        }
+      : {}),
   });
 
   const campaignOptions = (campaignsData?.results || []).map((c) => ({
@@ -361,23 +431,19 @@ export default function WorkloadDashboardPage() {
 
   const columnChartData = useMemo(
     () => (charts?.by_campaign || []).flatMap((x) => [
-      { campaign_name: x.campaign_name, metric: 'В работе', value: x.in_progress || 0 },
+      { campaign_name: x.campaign_name, metric: 'Открыто', value: x.in_progress || 0 },
       { campaign_name: x.campaign_name, metric: 'Просрочено', value: x.overdue || 0 },
     ]),
     [charts?.by_campaign],
   );
 
-  const lineChartData = useMemo(
-    () => (charts?.by_day || []).flatMap((x) => [
-      { date: x.date, metric: 'Открыто', value: x.opened || 0 },
-      { date: x.date, metric: 'Завершено', value: x.completed || 0 },
-      { date: x.date, metric: 'Просрочено', value: x.overdue || 0 },
-    ]),
-    [charts?.by_day],
+  const activityChartData = useMemo(
+    () => workloadActivityChartData(charts?.by_day, activityGroup),
+    [charts?.by_day, activityGroup],
   );
 
   const pieChartData = useMemo(
-    () => workloadStatusPieData(charts?.status_pie?.filter((item) => item.status !== 'blocked')),
+    () => workloadStatusPieData(charts?.status_pie),
     [charts?.status_pie],
   );
 
@@ -400,10 +466,12 @@ export default function WorkloadDashboardPage() {
       <Card size="small" style={{ marginBottom: 16 }}>
         <Space wrap>
           <DatePicker.RangePicker
+            allowClear
             value={period}
-            format="DD.MM.YYYY"
+            format="DD.MM.YY"
+            placeholder={['Начало', 'Конец']}
             onChange={(v) => {
-              if (v?.[0] && v?.[1]) setPeriod([v[0], v[1]]);
+              setPeriod(v?.[0] && v?.[1] ? [v[0], v[1]] : null);
             }}
           />
           <Select
@@ -434,7 +502,9 @@ export default function WorkloadDashboardPage() {
           />
         </Space>
         <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-          Период: активность (обновление, старт, завершение, открытые на конец периода).
+          {period
+            ? 'Период: активность (обновление, старт, завершение, открытые на конец периода).'
+            : 'Период не выбран — данные за всё время.'}
         </Typography.Text>
       </Card>
 
@@ -451,7 +521,7 @@ export default function WorkloadDashboardPage() {
         </Col>
         <Col span={4}>
           <Card size="small">
-            <Statistic title="Задачи в работе" value={totals.tasks_in_progress} />
+            <Statistic title="Открытые задачи" value={totals.tasks_in_progress} />
           </Card>
         </Col>
         <Col span={4}>
@@ -494,7 +564,7 @@ export default function WorkloadDashboardPage() {
               legend={{
                 color: {
                   title: false,
-                  itemLabelText: (datum: { label: string }) => workloadStatusLabel(datum.label) || datum.label,
+                  itemLabelText: (datum: { label: string }) => datum.label,
                 },
               }}
               tooltip={{
@@ -508,15 +578,47 @@ export default function WorkloadDashboardPage() {
         </Col>
       </Row>
 
-      <Card size="small" title="Активность по дням" style={{ marginBottom: 12 }}>
-        <Line
-          data={lineChartData}
-          xField="date"
+      <Card
+        size="small"
+        title="Активность по периодам"
+        extra={(
+          <Select
+            value={activityGroup}
+            style={{ width: 140 }}
+            options={WORKLOAD_ACTIVITY_GROUP_OPTIONS}
+            onChange={(v) => setActivityGroup(v)}
+          />
+        )}
+        style={{ marginBottom: 12 }}
+      >
+        <Column
+          data={activityChartData}
+          xField="period"
           yField="value"
-          seriesField="metric"
-          smooth
-          height={240}
-          point={{ size: 3 }}
+          seriesField="status_label"
+          isGroup
+          height={260}
+          scale={{
+            color: {
+              domain: WORKLOAD_STATUS_CHART_LABELS,
+              range: TASK_WORKFLOW_STATUSES.map((status) => WORKLOAD_STATUS_CHART_COLORS[status]),
+            },
+          }}
+          axis={{
+            x: {
+              labelFormatter: (value: string) => value,
+            },
+          }}
+          legend={{
+            color: {
+              title: false,
+              itemLabelText: (datum: { label: string }) => datum.label,
+            },
+          }}
+          tooltip={{
+            title: (datum: { period?: string }) => datum.period || '',
+            items: [{ channel: 'y', name: 'Задач', valueFormatter: (v: number) => String(v) }],
+          }}
         />
       </Card>
 

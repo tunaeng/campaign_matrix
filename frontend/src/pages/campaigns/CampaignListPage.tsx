@@ -1,12 +1,21 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Table, Tag, Button, Space, Select, Typography, Input, Popconfirm, App, Segmented, Alert } from 'antd';
+import { Card, Table, Tag, Button, Space, Select, Typography, Input, Popconfirm, App, Segmented, Alert, Modal, Form } from 'antd';
 import { PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, AppstoreOutlined, UnorderedListOutlined } from '@ant-design/icons';
-import { useCampaigns, useDeleteCampaign, useOrganizationTags } from '../../api/hooks';
+import { useCampaigns, useDeleteCampaign, useOrganizationTags, useBulkUpdateCampaigns, useBulkDeleteCampaigns } from '../../api/hooks';
 import { getAxiosErrorMessage } from '../../api/errorMessage';
 import type { Campaign } from '../../types';
 import CampaignBoardView from './CampaignBoardView';
 import EntityTagSelect, { renderTagChips } from '../../components/EntityTagSelect';
+import BulkSelectionToolbar from '../../components/BulkSelectionToolbar';
+
+const CAMPAIGN_STAGE_OPTIONS = [
+  { value: 'draft', label: 'Черновик' },
+  { value: 'organization_list', label: 'Формирование перечня организаций' },
+  { value: 'active', label: 'В работе' },
+  { value: 'paused', label: 'Приостановлена' },
+  { value: 'completed', label: 'Завершена' },
+];
 
 const statusColors: Record<string, string> = {
   draft: 'default',
@@ -24,6 +33,8 @@ export default function CampaignListPage() {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const deleteCampaign = useDeleteCampaign();
+  const bulkUpdateCampaigns = useBulkUpdateCampaigns();
+  const bulkDeleteCampaigns = useBulkDeleteCampaigns();
   const { data: tagsCatalog } = useOrganizationTags({ page_size: 500, tag_type: 'campaigns' });
   const [viewMode, setViewMode] = useState<'table' | 'board'>('board');
   const [statusFilter, setStatusFilter] = useState<string>();
@@ -31,6 +42,9 @@ export default function CampaignListPage() {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [ordering, setOrdering] = useState<string>();
+  const [selectedRowKeys, setSelectedRowKeys] = useState<number[]>([]);
+  const [bulkStageModalOpen, setBulkStageModalOpen] = useState(false);
+  const [bulkStageForm] = Form.useForm();
   const { data, isLoading, isError, error, refetch } = useCampaigns({
     status: statusFilter,
     search: search || undefined,
@@ -38,6 +52,41 @@ export default function CampaignListPage() {
     page,
     ordering,
   });
+
+  const bulkBusy = bulkUpdateCampaigns.isPending || bulkDeleteCampaigns.isPending;
+
+  async function runBulkMoveStage() {
+    if (!selectedRowKeys.length) return;
+    try {
+      const vals = await bulkStageForm.validateFields();
+      const result = await bulkUpdateCampaigns.mutateAsync({
+        ids: selectedRowKeys,
+        board_column: vals.board_column,
+      });
+      const skipped = result.skipped?.length || 0;
+      if (skipped > 0) {
+        message.warning(`Обновлено: ${result.updated}. Пропущено: ${skipped}.`);
+      } else {
+        message.success(`Обновлено кампаний: ${result.updated ?? 0}`);
+      }
+      setBulkStageModalOpen(false);
+      bulkStageForm.resetFields();
+      setSelectedRowKeys([]);
+    } catch {
+      message.error('Не удалось перенести кампании');
+    }
+  }
+
+  async function runBulkDelete() {
+    if (!selectedRowKeys.length) return;
+    try {
+      const result = await bulkDeleteCampaigns.mutateAsync(selectedRowKeys);
+      message.success(`Удалено кампаний: ${result.deleted ?? 0}`);
+      setSelectedRowKeys([]);
+    } catch {
+      message.error('Не удалось удалить кампании');
+    }
+  }
 
   const columns = [
     {
@@ -278,12 +327,34 @@ export default function CampaignListPage() {
           />
         </Space>
 
+        {selectedRowKeys.length > 0 && (
+          <BulkSelectionToolbar
+            count={selectedRowKeys.length}
+            entityLabel="кампаний"
+            busy={bulkBusy}
+            onMoveStage={() => setBulkStageModalOpen(true)}
+            moveStageLabel="Стадия…"
+            onDelete={runBulkDelete}
+            deleteConfirmTitle={`Удалить ${selectedRowKeys.length} кампаний?`}
+            onClearSelection={() => setSelectedRowKeys([])}
+          />
+        )}
+
         <Table
           dataSource={data?.results || []}
           columns={columns}
           rowKey="id"
           loading={isLoading}
           onChange={handleTableChange}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys) => {
+              if (bulkBusy) return;
+              setSelectedRowKeys(keys as number[]);
+            },
+            getCheckboxProps: () => ({ disabled: bulkBusy }),
+            selections: [Table.SELECTION_ALL, Table.SELECTION_INVERT, Table.SELECTION_NONE],
+          }}
           pagination={{
             current: page,
             total: data?.count,
@@ -292,6 +363,21 @@ export default function CampaignListPage() {
           }}
           size="middle"
         />
+
+        <Modal
+          title="Перенести кампании на стадию"
+          open={bulkStageModalOpen}
+          onCancel={() => { setBulkStageModalOpen(false); bulkStageForm.resetFields(); }}
+          onOk={runBulkMoveStage}
+          confirmLoading={bulkUpdateCampaigns.isPending}
+          destroyOnClose
+        >
+          <Form form={bulkStageForm} layout="vertical">
+            <Form.Item name="board_column" label="Стадия" rules={[{ required: true, message: 'Выберите стадию' }]}>
+              <Select options={CAMPAIGN_STAGE_OPTIONS} placeholder="Стадия" />
+            </Form.Item>
+          </Form>
+        </Modal>
       </Card>
       )}
     </div>

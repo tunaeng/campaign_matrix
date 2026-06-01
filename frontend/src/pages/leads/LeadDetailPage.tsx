@@ -550,6 +550,7 @@ export default function LeadDetailPage() {
                 </Tag>
               )}
               {lead.queue_name && <Tag>{lead.queue_name}</Tag>}
+              {lead.forwarded_from && <Tag color="gold">Передано от: {lead.forwarded_from}</Tag>}
             </Space>
           </div>
           <div style={{ textAlign: 'right' }}>

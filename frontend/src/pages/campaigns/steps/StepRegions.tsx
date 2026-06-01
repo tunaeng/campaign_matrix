@@ -3,6 +3,7 @@ import { Table, Select, Space, Typography, Tag, Button, Input, Switch } from 'an
 import { useRegions, useFederalDistricts, usePrograms, useDemandMatrix } from '../../../api/hooks';
 import type { CampaignFormData } from '../CampaignCreatePage';
 import type { Region } from '../../../types';
+import QueueScheduleSection, { remapQueueNumber } from './QueueScheduleSection';
 
 interface Props {
   data: CampaignFormData;
@@ -57,7 +58,10 @@ export default function StepRegions({ data, onChange }: Props) {
   const handleSelectionChange = (keys: number[]) => {
     const existingMap = new Map(data.regionData.map((rd) => [rd.region_id, rd]));
     const newRegionData = keys.map((regionId) => {
-      if (existingMap.has(regionId)) return existingMap.get(regionId)!;
+      if (existingMap.has(regionId)) {
+        const existing = existingMap.get(regionId)!;
+        return { ...existing, queue_number: existing.queue_number ?? 1 };
+      }
       return { region_id: regionId, queue_number: 1, manager_id: null };
     });
     onChange({ regionData: newRegionData });
@@ -113,19 +117,19 @@ export default function StepRegions({ data, onChange }: Props) {
     {
       title: 'Очередь',
       key: 'queue',
-      width: 120,
+      width: 180,
       render: (_: any, record: Region) => {
         const rd = data.regionData.find((r) => r.region_id === record.id);
         if (!rd) return '—';
         return (
           <Select
             size="small"
-            value={rd.queue_number}
+            value={rd.queue_number ?? 1}
             onChange={(v) => updateRegionQueue(record.id, v)}
-            style={{ width: 90 }}
+            style={{ width: '100%', minWidth: 150 }}
             options={data.queues.map((q) => ({
               value: q.queue_number,
-              label: q.name,
+              label: q.name || `Очередь ${q.queue_number}`,
             }))}
           />
         );
@@ -143,46 +147,29 @@ export default function StepRegions({ data, onChange }: Props) {
         </Typography.Text>
       )}
 
-      <div style={{ marginBottom: 16, padding: 12, background: '#fafafa', borderRadius: 8 }}>
-        <Typography.Text strong>Очереди:</Typography.Text>
-        <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
-          {data.queues.map((q, idx) => (
-            <Space key={idx}>
-              <Input
-                size="small"
-                value={q.name}
-                onChange={(e) => {
-                  const newQueues = [...data.queues];
-                  newQueues[idx] = { ...q, name: e.target.value };
-                  onChange({ queues: newQueues });
-                }}
-                style={{ width: 160 }}
-              />
-              {idx === data.queues.length - 1 && (
-                <Button
-                  size="small"
-                  type="dashed"
-                  onClick={() =>
-                    onChange({
-                      queues: [
-                        ...data.queues,
-                        {
-                          queue_number: data.queues.length + 1,
-                          name: `Очередь ${data.queues.length + 1}`,
-                          start_date: null,
-                          end_date: null,
-                          stage_deadlines: [],
-                        },
-                      ],
-                    })
-                  }
-                >
-                  + Добавить очередь
-                </Button>
-              )}
-            </Space>
-          ))}
-        </Space>
+      <QueueScheduleSection
+        data={data}
+        onChange={onChange}
+        onQueueRemoved={(removedQueueNumber) => {
+          onChange({
+            regionData: data.regionData.map((rd) => ({
+              ...rd,
+              queue_number: remapQueueNumber(rd.queue_number, removedQueueNumber),
+            })),
+          });
+        }}
+      />
+
+      <div style={{ marginBottom: 16 }}>
+        <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
+          Задание на поиск
+        </Typography.Text>
+        <Input.TextArea
+          value={data.collectSearchTask}
+          onChange={(e) => onChange({ collectSearchTask: e.target.value })}
+          rows={3}
+          placeholder="Краткий бриф: какие организации и контакты искать в выбранных регионах"
+        />
       </div>
 
       <Space wrap style={{ marginBottom: 16 }}>

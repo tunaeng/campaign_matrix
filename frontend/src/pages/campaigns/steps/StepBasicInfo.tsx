@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Form, Input, Select, Typography, Tag, Switch } from 'antd';
 import {
   useFederalOperators, useFunnels, useProjects, useMyActingOrganizations, useOrganizationTags, useFunnel,
@@ -20,12 +20,13 @@ export default function StepBasicInfo({ data, onChange }: Props) {
   const { data: funnels } = useFunnels({ is_active: true });
   const { data: allTags } = useOrganizationTags({ page_size: 500, tag_type: 'campaigns' });
   const selectedFunnelId = data.selectedFunnels[0] ?? 0;
-  const { data: selectedFunnel } = useFunnel(selectedFunnelId);
+  const { data: selectedFunnel, isFetched: funnelFetched } = useFunnel(selectedFunnelId);
   const collectStage = useMemo(
     () => selectedFunnel?.stages?.find((s) => s.is_collect_stage),
     [selectedFunnel],
   );
   const collectStageAvailable = !!collectStage;
+  const defaultsAppliedRef = useRef(false);
   const operatorOptions = (operators?.results || []).map((op) => ({
     value: op.id,
     label: op.short_name?.trim() || op.name,
@@ -33,6 +34,8 @@ export default function StepBasicInfo({ data, onChange }: Props) {
 
   useEffect(() => {
     if (!data.federal_operator_ids?.length) return;
+    if (!data.project) return;
+    if (!operators?.results) return;
     const allowed = new Set(operatorOptions.map((op) => op.value));
     const filtered = data.federal_operator_ids.filter((id) => allowed.has(id));
     if (filtered.length === data.federal_operator_ids.length) return;
@@ -40,13 +43,45 @@ export default function StepBasicInfo({ data, onChange }: Props) {
       federal_operator_ids: filtered,
       federal_operator: filtered[0] ?? null,
     });
-  }, [data.federal_operator_ids, data.project, operatorOptions]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data.federal_operator_ids, data.project, operators?.results, operatorOptions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (!projects?.results && !funnels?.results && !myActingOrganizations) return;
+    if (defaultsAppliedRef.current) return;
+
+    const updates: Partial<CampaignFormData> = {};
+    const projectList = projects?.results || [];
+    const funnelList = funnels?.results || [];
+    const actingList = myActingOrganizations || [];
+
+    if (data.project == null && projectList.length > 0) {
+      const currentYear = new Date().getFullYear();
+      const sorted = [...projectList].sort((a, b) => b.year - a.year);
+      updates.project = sorted.find((p) => p.year === currentYear)?.id ?? sorted[0].id;
+    }
+
+    if (data.acting_organization == null && actingList.length > 0) {
+      const primary = actingList.find((row) => row.is_primary);
+      updates.acting_organization = (primary ?? actingList[0]).organization;
+    }
+
+    if (data.selectedFunnels.length === 0 && funnelList.length > 0) {
+      const withCollectStage = funnelList.find((f) => /нулев/i.test(f.name));
+      updates.selectedFunnels = [withCollectStage?.id ?? funnelList[0].id];
+    }
+
+    defaultsAppliedRef.current = true;
+    if (Object.keys(updates).length > 0) {
+      onChange(updates);
+    }
+  }, [projects, funnels, myActingOrganizations, data.project, data.acting_organization, data.selectedFunnels]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!selectedFunnelId || !funnelFetched) return;
     if (!collectStageAvailable && data.hasCollectStage) {
       onChange({ hasCollectStage: false });
     }
-  }, [collectStageAvailable, data.hasCollectStage]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [collectStageAvailable, data.hasCollectStage, selectedFunnelId, funnelFetched]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{ maxWidth: 600 }}>
