@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User
+from .models import RoleDefinition, User
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -16,6 +16,20 @@ class UserSerializer(serializers.ModelSerializer):
     def get_full_name(self, obj):
         parts = [obj.last_name, obj.first_name, obj.patronymic]
         return " ".join(p for p in parts if p)
+
+
+class RoleDefinitionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RoleDefinition
+        fields = [
+            "id",
+            "code",
+            "name",
+            "description",
+            "scope_type",
+            "is_active",
+            "is_system",
+        ]
 
 
 class UserShortSerializer(serializers.ModelSerializer):
