@@ -23,7 +23,7 @@ from .models import (
 )
 from .task_workflow import TASK_WORKFLOW_STATUS_VALUES
 from .db_compat import lead_table_has_quota_split_columns
-from apps.funnels.models import StageChecklistItem, FunnelStage
+from apps.funnels.models import StageChecklistItem, FunnelStage, SubfunnelTemplate
 from .serializers import (
     CampaignListSerializer, CampaignDetailSerializer,
     CampaignCreateSerializer, CampaignQueueSerializer,
@@ -1018,6 +1018,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
             "current_template_stage",
             "assignee",
         ).prefetch_related("checklist_values__template_item")
+        cid = None
         if campaign_id and str(campaign_id).isdigit():
             cid = int(campaign_id)
             rows = rows.filter(
@@ -1038,15 +1039,50 @@ class CampaignViewSet(viewsets.ModelViewSet):
             .annotate(count=Count("id"))
             .order_by("campaign_subfunnel__template__name")
         )
-        template_tabs = [
-            {
-                "id": row["campaign_subfunnel__template_id"],
-                "name": row["campaign_subfunnel__template__name"],
-                "count": row["count"],
-            }
+        template_counts = {
+            row["campaign_subfunnel__template_id"]: row["count"]
             for row in templates
             if row["campaign_subfunnel__template_id"]
-        ]
+        }
+        template_names = {
+            row["campaign_subfunnel__template_id"]: row["campaign_subfunnel__template__name"]
+            for row in templates
+            if row["campaign_subfunnel__template_id"]
+        }
+        template_tabs_map = {}
+        configured_templates = CampaignSubfunnel.objects.filter(
+            is_active=True,
+            template__is_active=True,
+        )
+        if cid is not None:
+            configured_templates = configured_templates.filter(campaign_id=cid)
+        if role_id and str(role_id).isdigit():
+            configured_templates = configured_templates.filter(role_id=int(role_id))
+        for row in configured_templates.values("template_id", "template__name").distinct():
+            template_id_value = row["template_id"]
+            if not template_id_value:
+                continue
+            template_tabs_map[template_id_value] = {
+                "id": template_id_value,
+                "name": row["template__name"] or template_names.get(template_id_value) or f"Шаблон #{template_id_value}",
+                "count": template_counts.get(template_id_value, 0),
+            }
+        for template_id_value, count in template_counts.items():
+            if template_id_value in template_tabs_map:
+                continue
+            template_tabs_map[template_id_value] = {
+                "id": template_id_value,
+                "name": template_names.get(template_id_value) or f"Шаблон #{template_id_value}",
+                "count": count,
+            }
+        if not template_tabs_map:
+            for template in SubfunnelTemplate.objects.filter(is_active=True).values("id", "name").order_by("name"):
+                template_tabs_map[template["id"]] = {
+                    "id": template["id"],
+                    "name": template["name"] or f"Шаблон #{template['id']}",
+                    "count": 0,
+                }
+        template_tabs = sorted(template_tabs_map.values(), key=lambda item: item["name"] or "")
 
         active_template_id = None
         if template_id and str(template_id).isdigit():
@@ -1953,6 +1989,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
         rows = list(self.get_queryset().filter(id__in=id_list))
         updated = 0
         skipped = []
+        from .collect_tasks import activate_collect_campaign_workflow, deactivate_collect_campaign_workflow
 
         for row in rows:
             fields = list(update_fields_base)
@@ -1963,12 +2000,10 @@ class CampaignViewSet(viewsets.ModelViewSet):
                     continue
                 if col == Campaign.OperationalStage.ORGANIZATION_LIST:
                     row.status = Campaign.Status.ACTIVE
-                    row.operational_stage = Campaign.OperationalStage.ORGANIZATION_LIST
-                    fields.extend(["status", "operational_stage"])
+                    fields.append("status")
                 else:
                     row.status = col
-                    row.operational_stage = ""
-                    fields.extend(["status", "operational_stage"])
+                    fields.append("status")
             elif status_val is not None:
                 st = str(status_val)
                 if st not in valid_statuses:
@@ -1977,6 +2012,11 @@ class CampaignViewSet(viewsets.ModelViewSet):
                 row.status = st
                 fields.append("status")
             row.save(update_fields=list(dict.fromkeys(fields)))
+            if board_column is not None:
+                if str(board_column) == Campaign.OperationalStage.ORGANIZATION_LIST:
+                    activate_collect_campaign_workflow(row)
+                else:
+                    deactivate_collect_campaign_workflow(row)
             updated += 1
 
         return Response({"updated": updated, "skipped": skipped, "requested": len(id_list)})

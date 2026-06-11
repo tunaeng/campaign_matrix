@@ -29,16 +29,49 @@ def _default_template_stage(subfunnel):
     )
 
 
+def _is_collect_stage_subfunnel(subfunnel, collect_stage):
+    if not collect_stage:
+        return False
+    binding = subfunnel.binding
+    if not binding:
+        # Keep backward-compatible fallback for canonical collect template.
+        return (getattr(subfunnel.template, "slug", "") or "") == "lead-search-and-capture"
+    if binding.binding_type in {"stage", "checklist_item"}:
+        return binding.target_stage_id == collect_stage.id
+    if binding.binding_type == "stage_range_checklist":
+        if not binding.from_stage_id or not binding.to_stage_id:
+            return False
+        return binding.from_stage.order <= collect_stage.order <= binding.to_stage.order
+    return False
+
+
 def _sync_region_tasks(campaign: Campaign) -> None:
     """
     Materialize region-level tasks for active campaign subfunnels.
     These tasks are used in collect-stage workspace.
     """
     regions = list(campaign.campaign_regions.all())
-    active_subfunnels = list(campaign.subfunnels.filter(is_active=True))
+    collect_stage_by_funnel_id = {}
+    for funnel in campaign.funnels.prefetch_related("stages").all():
+        collect_stage = funnel.stages.filter(is_collect_stage=True).order_by("order", "id").first()
+        if collect_stage:
+            collect_stage_by_funnel_id[funnel.id] = collect_stage
+
+    active_subfunnels = list(
+        campaign.subfunnels.filter(is_active=True).select_related(
+            "template",
+            "binding",
+            "binding__target_stage",
+            "binding__from_stage",
+            "binding__to_stage",
+        )
+    )
 
     valid_pairs = set()
     for sub in active_subfunnels:
+        collect_stage = collect_stage_by_funnel_id.get(sub.funnel_id)
+        if not _is_collect_stage_subfunnel(sub, collect_stage):
+            continue
         default_stage = _default_template_stage(sub)
         defaults = {
             "assignee_id": sub.default_assignee_id,

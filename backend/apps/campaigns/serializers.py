@@ -1079,6 +1079,8 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
         allow_null=True,
         write_only=True,
     )
+    has_collect_stage = serializers.BooleanField(required=False, write_only=True)
+    board_column = serializers.CharField(required=False, write_only=True)
 
     class Meta:
         model = Campaign
@@ -1092,6 +1094,8 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
             "organization_ids", "lead_data", "manager_assignments",
             "campaign_subfunnel_data",
             "forecast_demand_mode", "forecast_total_goal", "forecast_queue_goals",
+            "has_collect_stage",
+            "board_column",
         ]
         read_only_fields = ["id"]
 
@@ -1132,6 +1136,37 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
                 for ld in group:
                     ld["forecast_demand"] = sh
 
+    @staticmethod
+    def _sync_collect_workflow(campaign, has_collect_stage=None):
+        from .collect_tasks import activate_collect_campaign_workflow, deactivate_collect_campaign_workflow
+
+        if campaign.status == Campaign.Status.ACTIVE and has_collect_stage is not False:
+            activate_collect_campaign_workflow(campaign)
+        else:
+            deactivate_collect_campaign_workflow(campaign)
+
+    @staticmethod
+    def _apply_board_column(validated_data, has_collect_stage):
+        board_column = validated_data.pop("board_column", None)
+        if board_column is None:
+            return has_collect_stage
+
+        col = str(board_column)
+        valid_columns = {choice[0] for choice in Campaign.Status.choices} | {
+            Campaign.OperationalStage.ORGANIZATION_LIST
+        }
+        if col not in valid_columns:
+            raise serializers.ValidationError({"board_column": "Неизвестная стадия доски."})
+
+        if col == Campaign.OperationalStage.ORGANIZATION_LIST:
+            validated_data["status"] = Campaign.Status.ACTIVE
+            return True
+
+        validated_data["status"] = col
+        if col == Campaign.Status.ACTIVE:
+            return False
+        return has_collect_stage
+
     def create(self, validated_data):
         queues_data = validated_data.pop("queues", [])
         funnel_ids = validated_data.pop("funnel_ids", [])
@@ -1146,6 +1181,8 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
         manager_assignments = validated_data.pop("manager_assignments", [])
         campaign_subfunnel_data = validated_data.pop("campaign_subfunnel_data", [])
         federal_operator_ids = validated_data.pop("federal_operator_ids", None)
+        has_collect_stage = validated_data.pop("has_collect_stage", None)
+        has_collect_stage = self._apply_board_column(validated_data, has_collect_stage)
         self._split_forecast_across_leads(
             lead_data,
             forecast_demand_mode,
@@ -1269,11 +1306,7 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
         if not campaign_subfunnel_data:
             campaign_subfunnel_data = self._build_default_campaign_subfunnels(funnel_ids)
         self._upsert_campaign_subfunnels(campaign, campaign_subfunnel_data)
-        from .collect_tasks import activate_collect_campaign_workflow, deactivate_collect_campaign_workflow
-        if campaign.status == Campaign.Status.ACTIVE:
-            activate_collect_campaign_workflow(campaign)
-        else:
-            deactivate_collect_campaign_workflow(campaign)
+        self._sync_collect_workflow(campaign, has_collect_stage)
         return campaign
 
     def update(self, instance, validated_data):
@@ -1289,6 +1322,8 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
         forecast_demand_mode = validated_data.pop("forecast_demand_mode", None)
         forecast_total_goal = validated_data.pop("forecast_total_goal", None)
         forecast_queue_goals = validated_data.pop("forecast_queue_goals", None)
+        has_collect_stage = validated_data.pop("has_collect_stage", None)
+        has_collect_stage = self._apply_board_column(validated_data, has_collect_stage)
 
         old_status = instance.status
         instance = super().update(instance, validated_data)
@@ -1461,12 +1496,14 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
 
         if campaign_subfunnel_data is not None:
             self._upsert_campaign_subfunnels(instance, campaign_subfunnel_data)
+        elif funnel_ids is not None and not instance.subfunnels.exists():
+            # Draft campaigns are often created before funnel selection;
+            # seed default task funnels on the first update after funnel is chosen.
+            default_subfunnels = self._build_default_campaign_subfunnels(funnel_ids)
+            if default_subfunnels:
+                self._upsert_campaign_subfunnels(instance, default_subfunnels)
 
-        from .collect_tasks import activate_collect_campaign_workflow, deactivate_collect_campaign_workflow
-        if instance.status == Campaign.Status.ACTIVE:
-            activate_collect_campaign_workflow(instance)
-        else:
-            deactivate_collect_campaign_workflow(instance)
+        self._sync_collect_workflow(instance, has_collect_stage)
 
         if old_status != "active" and instance.status == "active":
             self._activate_leads(instance)
@@ -1511,8 +1548,9 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
     def _build_default_campaign_subfunnels(funnel_ids):
         if not funnel_ids:
             return []
-        from apps.funnels.models import SubfunnelTemplateBinding
+        from apps.funnels.models import Funnel, SubfunnelTemplate, SubfunnelTemplateBinding
         rows = []
+        seen_template_pairs = set()
         bindings = SubfunnelTemplateBinding.objects.filter(
             funnel_id__in=funnel_ids,
             is_active=True,
@@ -1529,6 +1567,39 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
                     "is_active": True,
                 }
             )
+            seen_template_pairs.add((binding.funnel_id, binding.template_id))
+
+        # For funnels with zero/collect stage ensure canonical capture task funnel exists
+        # even when explicit binding has not been configured yet.
+        capture_template = (
+            SubfunnelTemplate.objects.filter(
+                slug="lead-search-and-capture",
+                is_active=True,
+            )
+            .only("id", "owner_role_id")
+            .first()
+        )
+        if capture_template:
+            collect_funnel_ids = list(
+                Funnel.objects.filter(id__in=funnel_ids, stages__is_collect_stage=True)
+                .values_list("id", flat=True)
+                .distinct()
+            )
+            for collect_funnel_id in collect_funnel_ids:
+                key = (collect_funnel_id, capture_template.id)
+                if key in seen_template_pairs:
+                    continue
+                rows.append(
+                    {
+                        "funnel_id": collect_funnel_id,
+                        "template_id": capture_template.id,
+                        "binding_id": None,
+                        "role_id": capture_template.owner_role_id,
+                        "default_assignee_id": None,
+                        "is_active": True,
+                    }
+                )
+                seen_template_pairs.add(key)
         return rows
 
     @staticmethod
