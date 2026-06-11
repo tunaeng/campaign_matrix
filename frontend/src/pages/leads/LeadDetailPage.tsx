@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Typography, Button, Space, Spin, Steps, Tag, Checkbox,
@@ -20,8 +20,7 @@ import {
   useOrganizationTags, useUsers,
   useAdvanceLeadSubfunnelStage, useRetreatLeadSubfunnelStage,
 } from '../../api/hooks';
-import type { LeadTimelineItem } from '../../types';
-import type { LeadChecklistValue, LeadStageDeadline } from '../../types';
+import type { LeadTimelineItem, LeadChecklistValue, LeadStageDeadline, Contact, LeadDetail } from '../../types';
 import ContactSelector from '../../components/ContactSelector';
 import ChecklistRichTextEditor from '../../components/ChecklistRichTextEditor';
 import ChecklistRichTextHtml from '../../components/ChecklistRichTextHtml';
@@ -57,6 +56,53 @@ const PRIMARY_CONTACT_STATUS_META: Record<
   result_recorded: { label: 'Результат зафиксирован', color: 'success' },
   rejected: { label: 'Отказ', color: 'error' },
 };
+
+function contactDisplayName(c: Contact): string {
+  return c.full_name || `${c.last_name} ${c.first_name} ${c.middle_name}`.trim();
+}
+
+function pickDefaultInteractionContact(
+  contacts: Contact[] | undefined,
+  lead: LeadDetail,
+): Contact | undefined {
+  if (!contacts?.length) return undefined;
+
+  const byId = new Map(contacts.map((c) => [c.id, c]));
+
+  const lastLinked = [...(lead.interactions || [])]
+    .sort(
+      (a, b) =>
+        new Date(b.date || b.created_at).getTime() - new Date(a.date || a.created_at).getTime(),
+    )
+    .find((i) => i.contact != null);
+  if (lastLinked?.contact != null) {
+    const found = byId.get(lastLinked.contact);
+    if (found) return found;
+  }
+
+  const primaryId = lead.primary_contact?.id;
+  if (primaryId != null) {
+    const found = byId.get(primaryId);
+    if (found) return found;
+  }
+
+  return contacts[0];
+}
+
+function buildInteractionContactFormValues(contact: Contact | undefined) {
+  if (!contact) {
+    return {
+      contact: undefined,
+      contact_person_auto: undefined,
+      contact_position_auto: undefined,
+    };
+  }
+  return {
+    contact: contact.id,
+    contact_person_auto: contactDisplayName(contact),
+    contact_position_auto: contact.position || '',
+  };
+}
 
 export default function LeadDetailPage() {
   const { message } = App.useApp();
@@ -108,6 +154,28 @@ export default function LeadDetailPage() {
   const [interactionModalOpen, setInteractionModalOpen] = useState(false);
   const [interactionForm] = Form.useForm();
   const [contactMode, setContactMode] = useState<'select' | 'manual'>('select');
+
+  useEffect(() => {
+    if (!interactionModalOpen || contactMode !== 'select' || !lead) return;
+    if (interactionForm.getFieldValue('contact')) return;
+    if (!contactsForHistory?.length) return;
+    const defaultContact = pickDefaultInteractionContact(contactsForHistory, lead);
+    if (defaultContact) {
+      interactionForm.setFieldsValue(buildInteractionContactFormValues(defaultContact));
+    }
+  }, [interactionModalOpen, contactMode, contactsForHistory, lead, interactionForm]);
+
+  const openInteractionModal = () => {
+    setContactMode('select');
+    const defaultContact = lead ? pickDefaultInteractionContact(contactsForHistory, lead) : undefined;
+    interactionForm.resetFields();
+    interactionForm.setFieldsValue({
+      date: dayjs(),
+      channel: 'phone',
+      ...buildInteractionContactFormValues(defaultContact),
+    });
+    setInteractionModalOpen(true);
+  };
 
   if (isLoading) return <div style={{ textAlign: 'center', paddingTop: 100 }}><Spin size="large" /></div>;
   if (!lead) return <Typography.Text>Лид не найден</Typography.Text>;
@@ -882,10 +950,7 @@ export default function LeadDetailPage() {
         extra={
           <Button
             type="primary" size="small" icon={<PlusOutlined />}
-            onClick={() => {
-              interactionForm.setFieldsValue({ date: dayjs() });
-              setInteractionModalOpen(true);
-            }}
+            onClick={openInteractionModal}
           >
             Добавить взаимодействие
           </Button>
@@ -962,7 +1027,7 @@ export default function LeadDetailPage() {
                     interactionForm.setFieldValue('contact', contactId);
                     if (contact) {
                       interactionForm.setFieldsValue({
-                        contact_person_auto: contact.full_name || `${contact.last_name} ${contact.first_name}`.trim(),
+                        contact_person_auto: contactDisplayName(contact),
                         contact_position_auto: contact.position,
                       });
                     }

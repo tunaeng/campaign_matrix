@@ -999,15 +999,31 @@ export function usePatchCampaign() {
     mutationFn: ({ id, data }: { id: number; data: Record<string, unknown> }) =>
       client.patch(`/campaigns/${id}/`, data).then((r) => r.data),
     onMutate: async ({ id, data }) => {
-      const status = data.status as Campaign['status'] | undefined;
+      const boardColumn = data.board_column as (Campaign['status'] | 'organization_list' | undefined);
+      const status = (
+        boardColumn === 'organization_list'
+          ? 'active'
+          : boardColumn || data.status
+      ) as Campaign['status'] | undefined;
       if (status === undefined) return {};
+      const operationalStage = boardColumn === undefined
+        ? undefined
+        : (boardColumn === 'organization_list' ? 'organization_list' : '');
       await qc.cancelQueries({ queryKey: ['campaigns'] });
       const previous = qc.getQueriesData<PaginatedResponse<Campaign>>({ queryKey: ['campaigns'] });
       qc.setQueriesData<PaginatedResponse<Campaign>>({ queryKey: ['campaigns'] }, (old) => {
         if (!old?.results) return old;
         return {
           ...old,
-          results: old.results.map((c) => (c.id === id ? { ...c, status } : c)),
+          results: old.results.map((c) => (
+            c.id === id
+              ? {
+                  ...c,
+                  status,
+                  ...(operationalStage !== undefined ? { operational_stage: operationalStage } : {}),
+                }
+              : c
+          )),
         };
       });
       return { previous };

@@ -19,11 +19,21 @@ import {
   Modal,
 } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
-import { useDemandMatrix, useFederalDistricts, useRegions } from '../../api/hooks';
+import { useDemandMatrix, useFederalDistricts, useFederalOperators, useRegions } from '../../api/hooks';
 import type { DefaultOptionType } from 'antd/es/cascader';
 import ImportWizard from './ImportWizard';
 
 type ViewMode = 'professions-x-regions' | 'regions-x-professions';
+type DemandHistoryEntry = {
+  id: number;
+  source?: string;
+  demand_import_id?: number;
+  federal_operator_id: number | null;
+  federal_operator_name: string;
+  previous_is_demanded: boolean | null;
+  new_is_demanded: boolean;
+  changed_at: string;
+};
 
 const getApprovalBorder = (status: string | null | undefined): React.CSSProperties => {
   switch (status) {
@@ -91,24 +101,81 @@ const APPROVAL_STATUS_OPTIONS = [
   { value: 'unlikely', label: 'Маловероятно' },
 ];
 
+function demandValueLabel(value: boolean | null) {
+  if (value === null) return 'не было';
+  return value ? 'да' : 'нет';
+}
+
+function formatHistoryDate(value: string) {
+  return new Date(value).toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function renderDemandTooltip(params: {
+  approvalStatus?: string | null;
+  showMissingInfo?: boolean;
+  missingOps?: { id: number; short_name: string }[];
+  history?: DemandHistoryEntry[];
+}) {
+  const { approvalStatus, showMissingInfo, missingOps, history = [] } = params;
+  if (!approvalStatus && !showMissingInfo && history.length === 0) return undefined;
+  return (
+    <div style={{ maxWidth: 380 }}>
+      {approvalStatus && <div>Статус: {approvalStatus}</div>}
+      {showMissingInfo && missingOps && (
+        <div style={{ marginTop: 4 }}>
+          Отсутствует в: {missingOps.map((o) => o.short_name).join(', ')}
+        </div>
+      )}
+      {history.length > 0 && (
+        <div style={{ marginTop: approvalStatus || showMissingInfo ? 8 : 0 }}>
+          <Typography.Text strong style={{ color: 'inherit' }}>История по импортам</Typography.Text>
+          <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {history.map((item) => (
+              <div key={item.id}>
+                <div>{formatHistoryDate(item.changed_at)}</div>
+                <div>
+                  {item.federal_operator_name || 'ФО'}: востребована — {demandValueLabel(item.new_is_demanded)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DemandMatrixPage() {
   const [demandedOnly, setDemandedOnly] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedProfessionIds, setSelectedProfessionIds] = useState<number[]>([]);
   const [selectedRegionIds, setSelectedRegionIds] = useState<number[]>([]);
   const [selectedApprovalStatuses, setSelectedApprovalStatuses] = useState<string[]>([]);
+  const [selectedFederalOperatorId, setSelectedFederalOperatorId] = useState<number | undefined>();
   const [year, setYear] = useState<number>(2026);
   const [viewMode, setViewMode] = useState<ViewMode>('professions-x-regions');
   const [showDifferencesOnly, setShowDifferencesOnly] = useState<boolean>(false);
   const [deferMatrixRender, setDeferMatrixRender] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [pageSizeView1, setPageSizeView1] = useState(30);
+  const [pageSizeView2, setPageSizeView2] = useState(25);
+  const [selectedDemandImportIds, setSelectedDemandImportIds] = useState<number[]>([]);
 
   const { data: districts } = useFederalDistricts();
   const { data: regionsData } = useRegions();
+  const { data: federalOperatorsData } = useFederalOperators();
   const { data: matrix, isLoading } = useDemandMatrix({
     demanded_only: demandedOnly || undefined,
     region_ids: selectedRegionIds.length > 0 ? selectedRegionIds.join(',') : undefined,
     approval_statuses: selectedApprovalStatuses.length > 0 ? selectedApprovalStatuses.join(',') : undefined,
+    federal_operator_ids: selectedFederalOperatorId ? String(selectedFederalOperatorId) : undefined,
+    demand_import_ids: selectedDemandImportIds.length > 0 ? selectedDemandImportIds.join(',') : undefined,
     year,
   });
   const matrixForRender = deferMatrixRender ? matrix : undefined;
@@ -187,6 +254,23 @@ export default function DemandMatrixPage() {
     }));
   }, [districts, regionsData]);
 
+  const federalOperatorOptions = useMemo(() => {
+    const operators = federalOperatorsData?.results || [];
+    return operators
+      .map((operator) => ({
+        value: operator.id,
+        label: operator.short_name?.trim() || operator.name,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+  }, [federalOperatorsData]);
+
+  const demandImportOptions = useMemo(() => {
+    return (matrixForRender?.demand_imports || []).map((item) => ({
+      value: item.id,
+      label: `${formatHistoryDate(item.imported_at)} · ${item.federal_operator_name}`,
+    }));
+  }, [matrixForRender]);
+
   const handleRegionFilterChange = (value: (string | number)[][]) => {
     const regionIds: number[] = [];
     value.forEach((path) => {
@@ -230,20 +314,16 @@ export default function DemandMatrixPage() {
         const isDemanded = record.regions[String(r.id)];
         const approvalStatus = record.approvals?.[String(r.id)];
         const missingOps = record.region_missing_operators?.[String(r.id)];
+        const history = record.demand_history?.[String(r.id)] as DemandHistoryEntry[] | undefined;
         const hasMissing = missingOps && missingOps.length > 0;
         const showMissingInfo = showDifferencesOnly && hasMissing;
         const borderStyle = getApprovalBorder(approvalStatus);
-        const tooltipTitle =
-          approvalStatus || showMissingInfo ? (
-            <div>
-              {approvalStatus && <div>Статус: {approvalStatus}</div>}
-              {showMissingInfo && (
-                <div style={{ marginTop: 4 }}>
-                  Отсутствует в: {missingOps!.map((o: { id: number; short_name: string }) => o.short_name).join(', ')}
-                </div>
-              )}
-            </div>
-          ) : undefined;
+        const tooltipTitle = renderDemandTooltip({
+          approvalStatus,
+          showMissingInfo,
+          missingOps,
+          history,
+        });
         const cell = (
           <div
             style={{
@@ -355,6 +435,14 @@ export default function DemandMatrixPage() {
           },
           {} as Record<number, string | null>
         ),
+        demand_history_by_profession: visibleProfessions.reduce(
+          (acc, p) => {
+            const history = p.demand_history?.[String(region.id)];
+            if (history?.length) acc[p.profession_id] = history;
+            return acc;
+          },
+          {} as Record<number, DemandHistoryEntry[]>
+        ),
         region_missing_operators_by_profession: visibleProfessions.reduce(
           (acc, p) => {
             const missing = p.region_missing_operators?.[String(region.id)];
@@ -384,20 +472,16 @@ export default function DemandMatrixPage() {
         const isDemanded = record.professions[p.profession_id];
         const approvalStatus = record.approvals?.[p.profession_id];
         const missingOps = record.region_missing_operators_by_profession?.[p.profession_id];
+        const history = record.demand_history_by_profession?.[p.profession_id] as DemandHistoryEntry[] | undefined;
         const hasMissing = missingOps && missingOps.length > 0;
         const showMissingInfo = showDifferencesOnly && hasMissing;
         const borderStyle = getApprovalBorder(approvalStatus);
-        const tooltipTitle =
-          approvalStatus || showMissingInfo ? (
-            <div>
-              {approvalStatus && <div>Статус: {approvalStatus}</div>}
-              {showMissingInfo && (
-                <div style={{ marginTop: 4 }}>
-                  Отсутствует в: {missingOps!.map((o: { id: number; short_name: string }) => o.short_name).join(', ')}
-                </div>
-              )}
-            </div>
-          ) : undefined;
+        const tooltipTitle = renderDemandTooltip({
+          approvalStatus,
+          showMissingInfo,
+          missingOps,
+          history,
+        });
         const cell = (
           <div
             style={{
@@ -521,7 +605,7 @@ export default function DemandMatrixPage() {
               </Space>
             </div>
 
-            {/* Строка 2: Переключение вида + Год */}
+            {/* Строка 2: Переключение вида + Год + ФО */}
             <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               <Segmented
                 value={viewMode}
@@ -537,6 +621,24 @@ export default function DemandMatrixPage() {
                 onChange={setYear}
                 options={YEAR_OPTIONS}
                 style={{ width: 100 }}
+              />
+              <Select
+                placeholder="Федеральный оператор"
+                value={selectedFederalOperatorId}
+                onChange={(v) => setSelectedFederalOperatorId(v)}
+                options={federalOperatorOptions}
+                style={{ minWidth: 260 }}
+                allowClear
+              />
+              <Select
+                mode="multiple"
+                placeholder="Импорты для истории"
+                value={selectedDemandImportIds.length ? selectedDemandImportIds : undefined}
+                onChange={(ids) => setSelectedDemandImportIds(ids || [])}
+                options={demandImportOptions}
+                style={{ minWidth: 360 }}
+                maxTagCount="responsive"
+                allowClear
               />
               <Space>
                 <Switch checked={showDifferencesOnly} onChange={setShowDifferencesOnly} />
@@ -631,7 +733,7 @@ export default function DemandMatrixPage() {
           <Spin size="large" />
         </div>
       ) : viewMode === 'professions-x-regions' ? (
-        <Card styles={{ body: { padding: 0, overflow: 'auto' } }}>
+        <Card styles={{ body: { padding: 12, overflow: 'auto' } }}>
           <Table
             className="demand-matrix-table"
             dataSource={visibleProfessions}
@@ -639,7 +741,13 @@ export default function DemandMatrixPage() {
             rowKey="profession_id"
             size="small"
             virtual
-            pagination={{ pageSize: 30, showTotal: (t) => `Всего: ${t}` }}
+            pagination={{
+              pageSize: pageSizeView1,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 30, 50, 100],
+              onShowSizeChange: (_current, size) => setPageSizeView1(size),
+              showTotal: (t) => `Всего: ${t}`,
+            }}
             scroll={{
               x: 425 + visibleRegions.length * 120,
               y: 620,
@@ -648,7 +756,7 @@ export default function DemandMatrixPage() {
           />
         </Card>
       ) : (
-        <Card styles={{ body: { padding: 0, overflow: 'auto' } }}>
+        <Card styles={{ body: { padding: 12, overflow: 'auto' } }}>
           <Table
             className="demand-matrix-table"
             dataSource={regionRowsData}
@@ -656,7 +764,13 @@ export default function DemandMatrixPage() {
             rowKey="region_id"
             size="small"
             virtual
-            pagination={{ pageSize: 25, showTotal: (t) => `Всего: ${t}` }}
+            pagination={{
+              pageSize: pageSizeView2,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 25, 50, 100],
+              onShowSizeChange: (_current, size) => setPageSizeView2(size),
+              showTotal: (t) => `Всего: ${t}`,
+            }}
             scroll={{
               x: 410 + visibleProfessions.length * 160,
               y: 620,

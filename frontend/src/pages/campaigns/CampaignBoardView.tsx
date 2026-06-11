@@ -358,7 +358,7 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
     }
 
     patchCampaign.mutate(
-      { id: payload.campaignId, data: { status: newStatus } },
+      { id: payload.campaignId, data: { board_column: targetColumn } },
       {
         onSuccess: () => {
           if (targetColumn === 'organization_list') {

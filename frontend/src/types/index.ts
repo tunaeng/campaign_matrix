@@ -100,6 +100,8 @@ export interface Organization {
   has_interaction_history: boolean;
   last_interaction_date: string | null;
   interactions_count: number;
+  can_delete?: boolean;
+  deletion_block_reasons?: string[];
   contact_person?: string;
   contact_email?: string;
   contact_phone?: string;
@@ -319,9 +321,26 @@ export interface DemandMatrix {
     regions: Record<string, boolean>;
     approvals: Record<string, string | null>;
     region_missing_operators?: Record<string, { id: number; short_name: string }[]>;
+    demand_history?: Record<string, {
+      id: number;
+      source?: string;
+      demand_import_id?: number;
+      federal_operator_id: number | null;
+      federal_operator_name: string;
+      previous_is_demanded: boolean | null;
+      new_is_demanded: boolean;
+      changed_at: string;
+    }[]>;
   }[];
   year: number;
   federal_operators?: { id: number; short_name: string }[];
+  demand_imports?: {
+    id: number;
+    federal_operator_id: number;
+    federal_operator_name: string;
+    imported_at: string;
+    snapshot_count: number;
+  }[];
 }
 
 export interface ImportPreviewInvalidRegion {
@@ -448,6 +467,8 @@ export interface Contact {
   tags?: number[];
   tag_names?: string[];
   bitrix_contact_id: number | null;
+  can_delete?: boolean;
+  deletion_block_reasons?: string[];
   created_at: string;
   updated_at: string;
 }

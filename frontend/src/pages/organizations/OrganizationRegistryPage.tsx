@@ -126,6 +126,13 @@ export default function OrganizationRegistryPage() {
     return m;
   }, [organizations]);
 
+  const deletableSelectedIds = useMemo(
+    () => selectedRowKeys.filter((id) => orgById.get(id)?.can_delete !== false),
+    [selectedRowKeys, orgById],
+  );
+
+  const blockedSelectedCount = selectedRowKeys.length - deletableSelectedIds.length;
+
   const mergedParentOrgOptions = useMemo(() => {
     const seen = new Set<number>();
     const out: { value: number; label: string }[] = [];
@@ -431,7 +438,11 @@ export default function OrganizationRegistryPage() {
   };
 
   const handleBulkDelete = async () => {
-    const ids = [...selectedRowKeys];
+    const ids = [...deletableSelectedIds];
+    if (!ids.length) {
+      message.warning('Среди выбранных нет организаций, которые можно удалить');
+      return;
+    }
     await runBulkPatches(
       ids,
       async (id) => {
@@ -591,16 +602,27 @@ export default function OrganizationRegistryPage() {
                 Изменить тип…
               </Button>
               <Popconfirm
-                title={`Удалить ${selectedRowKeys.length} организаций?`}
-                description="Удалятся связанные контакты, лиды и участие в кампаниях для этих организаций."
+                title={`Удалить ${deletableSelectedIds.length} организаций?`}
+                description={
+                  blockedSelectedCount > 0
+                    ? `Будут удалены только организации без участия в проектах, истории взаимодействий и связей с лидами. Пропущено защищённых: ${blockedSelectedCount}.`
+                    : 'Удалятся только организации без участия в проектах, истории взаимодействий и связей с лидами.'
+                }
                 okText="Удалить"
                 cancelText="Отмена"
-                okButtonProps={{ danger: true, disabled: bulkActionBusy }}
-                disabled={bulkActionBusy}
+                okButtonProps={{
+                  danger: true,
+                  disabled: bulkActionBusy || deletableSelectedIds.length === 0,
+                }}
+                disabled={bulkActionBusy || deletableSelectedIds.length === 0}
                 onConfirm={handleBulkDelete}
               >
-                <Button size="small" danger disabled={bulkActionBusy}>
-                  Удалить
+                <Button
+                  size="small"
+                  danger
+                  disabled={bulkActionBusy || deletableSelectedIds.length === 0}
+                >
+                  Удалить{deletableSelectedIds.length ? ` (${deletableSelectedIds.length})` : ''}
                 </Button>
               </Popconfirm>
               <Button size="small" type="link" disabled={bulkActionBusy} onClick={clearSelection}>
@@ -646,8 +668,12 @@ export default function OrganizationRegistryPage() {
             if (bulkActionBusy) return;
             setSelectedRowKeys(keys as number[]);
           },
-          getCheckboxProps: () => ({
-            disabled: bulkActionBusy,
+          getCheckboxProps: (row: Organization) => ({
+            disabled: bulkActionBusy || row.can_delete === false,
+            title:
+              row.can_delete === false && row.deletion_block_reasons?.length
+                ? row.deletion_block_reasons.join('; ')
+                : undefined,
           }),
           selections: [Table.SELECTION_ALL, Table.SELECTION_INVERT, Table.SELECTION_NONE],
           columnWidth: 48,

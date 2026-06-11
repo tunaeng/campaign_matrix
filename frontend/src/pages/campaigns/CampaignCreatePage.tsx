@@ -473,6 +473,7 @@ export default function CampaignCreatePage() {
           project: formData.project,
           acting_organization: formData.acting_organization,
           collect_search_task: formData.collectSearchTask,
+          has_collect_stage: formData.hasCollectStage,
           tags: formData.tagIds?.length ? formData.tagIds : undefined,
         });
         setCampaignId(result.id);
@@ -508,6 +509,7 @@ export default function CampaignCreatePage() {
           collect_search_task: formData.collectSearchTask,
           hypothesis: formData.hypothesis,
           funnel_ids: formData.selectedFunnels,
+          has_collect_stage: formData.hasCollectStage,
           tags: formData.tagIds,
         });
         setSaveStatus('saved');
@@ -542,6 +544,7 @@ export default function CampaignCreatePage() {
       acting_organization: fd.acting_organization,
       collect_search_task: fd.collectSearchTask,
       hypothesis: fd.hypothesis,
+      has_collect_stage: fd.hasCollectStage,
     };
     if (upToStep >= 0) {
       payload.funnel_ids = fd.selectedFunnels;
@@ -566,6 +569,7 @@ export default function CampaignCreatePage() {
         }));
         payload.lead_data = [];
       } else {
+        payload.region_data = [];
         payload.lead_data = buildLeadData(fd, false);
       }
       Object.assign(payload, buildForecastPayload(fd));
@@ -644,6 +648,7 @@ export default function CampaignCreatePage() {
         hypothesis: formData.hypothesis,
         tags: formData.tagIds,
         status: 'active',
+        has_collect_stage: formData.hasCollectStage,
         funnel_ids: formData.selectedFunnels,
         queues: formData.queues.map((q) => ({
           queue_number: q.queue_number,
@@ -653,11 +658,13 @@ export default function CampaignCreatePage() {
           stage_deadlines: q.stage_deadlines,
         })),
         program_ids: formData.selectedPrograms,
-        region_data: formData.regionData.map((rd) => ({
-          ...rd,
-          queue_number: rd.queue_number ?? 1,
-          search_task: rd.search_task?.trim() || formData.collectSearchTask?.trim() || '',
-        })),
+        region_data: formData.hasCollectStage
+          ? formData.regionData.map((rd) => ({
+              ...rd,
+              queue_number: rd.queue_number ?? 1,
+              search_task: rd.search_task?.trim() || formData.collectSearchTask?.trim() || '',
+            }))
+          : [],
         organization_ids: formData.selectedOrganizations,
         lead_data: leadData,
         manager_assignments: formData.managerAssignments,

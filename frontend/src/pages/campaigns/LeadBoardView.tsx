@@ -70,6 +70,14 @@ function primaryLeadRegionLabel(l: Lead): string | null {
 }
 
 type LeadDragPayload = { type: 'lead'; leadId: number; stageKey: number; campaignId: number };
+type LeadBoardStage = {
+  id: number;
+  name: string;
+  order: number;
+  is_rejection: boolean;
+  is_collect_stage?: boolean;
+  deadline_days: number;
+};
 
 function KanbanDropColumn({ id, children }: { id: string; children: React.ReactNode }) {
   const { setNodeRef, isOver } = useDroppable({ id });
@@ -377,6 +385,7 @@ export default function LeadBoardView({ campaign }: Props) {
 
   const funnelId = campaign.campaign_funnels?.[0]?.funnel;
   const { data: funnelDetail } = useFunnel(funnelId!);
+  const showCollectStage = campaign.operational_stage === 'organization_list';
 
   useEffect(() => {
     setSelectedLeadIds([]);
@@ -396,9 +405,10 @@ export default function LeadBoardView({ campaign }: Props) {
 
   const stageOptions = useMemo(
     () => [...(funnelDetail?.stages || [])]
+      .filter((s) => showCollectStage || !s.is_collect_stage)
       .sort((a, b) => a.order - b.order)
       .map((s) => ({ value: s.id, label: s.name })),
-    [funnelDetail],
+    [funnelDetail, showCollectStage],
   );
 
   async function runBulkMoveStage() {
@@ -460,10 +470,12 @@ export default function LeadBoardView({ campaign }: Props) {
     return list;
   }, [leads, search, managerFilter, activeQueue]);
 
-  const stages: { id: number; name: string; order: number; is_rejection: boolean; deadline_days: number }[] = useMemo(() => {
+  const stages: LeadBoardStage[] = useMemo(() => {
     if (!funnelDetail?.stages) return [];
-    return [...funnelDetail.stages].sort((a, b) => a.order - b.order);
-  }, [funnelDetail]);
+    return [...funnelDetail.stages]
+      .filter((s) => showCollectStage || !s.is_collect_stage)
+      .sort((a, b) => a.order - b.order);
+  }, [funnelDetail, showCollectStage]);
 
   const normalStages = stages.filter(s => !s.is_rejection);
   const rejectionStage = stages.find(s => s.is_rejection);

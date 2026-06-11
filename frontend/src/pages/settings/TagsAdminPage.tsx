@@ -40,16 +40,21 @@ function pickAutoColor(tagName: string): string {
 
 export default function TagsAdminPage() {
   const { message } = App.useApp();
-  const { data, isLoading, refetch } = useOrganizationTags({ page_size: 500 });
   const createTag = useCreateOrganizationTag();
   const patchTag = usePatchOrganizationTag();
   const deleteTag = useDeleteOrganizationTag();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<OrganizationTag | null>(null);
+  const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<OrganizationTag['tag_type'] | undefined>();
   const [categoryFilter, setCategoryFilter] = useState<string | undefined>();
   const [form] = Form.useForm();
   const selectedColor = Form.useWatch('color', form);
+
+  const { data, isLoading, refetch } = useOrganizationTags({
+    page_size: 500,
+    search: search.trim() || undefined,
+  });
 
   const rows = data?.results || [];
   const categories = useMemo(
@@ -130,6 +135,12 @@ export default function TagsAdminPage() {
 
       <Card>
         <Space style={{ marginBottom: 12 }} wrap>
+          <Input.Search
+            allowClear
+            style={{ width: 280 }}
+            placeholder="Поиск по названию, коду или категории"
+            onSearch={setSearch}
+          />
           <Select
             allowClear
             style={{ width: 220 }}

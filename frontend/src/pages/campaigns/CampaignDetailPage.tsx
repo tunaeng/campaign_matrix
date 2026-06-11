@@ -24,6 +24,8 @@ const statusColors: Record<string, string> = {
   completed: 'success',
 };
 
+type CampaignStageValue = CampaignDetail['status'] | 'organization_list';
+
 const orgStatusColors: Record<string, string> = {
   pending: 'default',
   contacted: 'processing',
@@ -60,12 +62,14 @@ export default function CampaignDetailPage() {
   const bulkDeleteLeads = useBulkDeleteLeads();
   const funnelId = campaign?.campaign_funnels?.[0]?.funnel;
   const { data: funnelDetail } = useFunnel(funnelId ?? 0);
+  const showCollectStage = campaign?.operational_stage === 'organization_list';
 
   const leadStageOptions = useMemo(
     () => [...(funnelDetail?.stages || [])]
+      .filter((s) => showCollectStage || !s.is_collect_stage)
       .sort((a, b) => a.order - b.order)
       .map((s) => ({ value: s.id, label: s.name })),
-    [funnelDetail],
+    [funnelDetail, showCollectStage],
   );
 
   const leadBulkBusy = bulkUpdateLeads.isPending || bulkDeleteLeads.isPending;
@@ -218,9 +222,9 @@ export default function CampaignDetailPage() {
   if (isLoading) return <div style={{ textAlign: 'center', paddingTop: 100 }}><Spin size="large" /></div>;
   if (!campaign) return <Typography.Text>Кампания не найдена</Typography.Text>;
 
-  const handleStatusChange = async (newStatus: string) => {
+  const handleStatusChange = async (newStage: CampaignStageValue) => {
     try {
-      await updateCampaign.mutateAsync({ status: newStatus });
+      await updateCampaign.mutateAsync({ board_column: newStage });
       message.success('Статус обновлён');
     } catch {
       message.error('Ошибка обновления статуса');
@@ -638,12 +642,13 @@ export default function CampaignDetailPage() {
                 <Tag color="blue">{campaign.operational_stage_display}</Tag>
               )}
               <Select
-                value={campaign.status}
+                value={(campaign.operational_stage || campaign.status) as CampaignStageValue}
                 onChange={handleStatusChange}
                 size="small"
                 style={{ width: 160 }}
                 options={[
                   { value: 'draft', label: 'Черновик' },
+                  { value: 'organization_list', label: 'Формирование перечня' },
                   { value: 'active', label: 'В работе' },
                   { value: 'paused', label: 'Приостановлена' },
                   { value: 'completed', label: 'Завершена' },
