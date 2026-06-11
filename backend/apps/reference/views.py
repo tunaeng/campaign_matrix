@@ -16,6 +16,7 @@ from openpyxl import Workbook, load_workbook
 
 from .models import (
     FederalDistrict, Region, Profession, ProfessionDemandStatus,
+    ProfessionDemandStatusHistory,
     ProfessionApprovalStatus, Program, Contract,
     ContractProgram, Quota, DemandImport, DemandImportSnapshot,
 )
@@ -264,6 +265,44 @@ class DemandMatrixImportView(APIView):
         demand_import.save(update_fields=["snapshot_count"])
         return demand_import
 
+    @staticmethod
+    def _bulk_create_demand_statuses(rows, batch_size=1000):
+        for i in range(0, len(rows), batch_size):
+            ProfessionDemandStatus.objects.bulk_create(rows[i:i + batch_size])
+        history_rows = [
+            ProfessionDemandStatusHistory(
+                demand_status_id=getattr(row, "id", None),
+                federal_operator_id=row.federal_operator_id,
+                profession_id=row.profession_id,
+                region_id=row.region_id,
+                year=row.year,
+                previous_is_demanded=None,
+                new_is_demanded=row.is_demanded,
+            )
+            for row in rows
+        ]
+        for i in range(0, len(history_rows), batch_size):
+            ProfessionDemandStatusHistory.objects.bulk_create(history_rows[i:i + batch_size])
+
+    @staticmethod
+    def _bulk_update_demand_statuses(rows, batch_size=1000):
+        for i in range(0, len(rows), batch_size):
+            ProfessionDemandStatus.objects.bulk_update(rows[i:i + batch_size], ["is_demanded"])
+        history_rows = [
+            ProfessionDemandStatusHistory(
+                demand_status_id=row.id,
+                federal_operator_id=row.federal_operator_id,
+                profession_id=row.profession_id,
+                region_id=row.region_id,
+                year=row.year,
+                previous_is_demanded=getattr(row, "_previous_is_demanded", None),
+                new_is_demanded=row.is_demanded,
+            )
+            for row in rows
+        ]
+        for i in range(0, len(history_rows), batch_size):
+            ProfessionDemandStatusHistory.objects.bulk_create(history_rows[i:i + batch_size])
+
     def _read_csv_rows(self, raw: bytes) -> List[List[str]]:
         decoded = None
         for enc in ("utf-8-sig", "cp1251", "utf-8"):
@@ -435,16 +474,14 @@ class DemandMatrixImportView(APIView):
                             is_demanded=is_demanded,
                         ))
                     elif obj.is_demanded != is_demanded:
+                        obj._previous_is_demanded = obj.is_demanded
                         obj.is_demanded = is_demanded
                         to_update.append(obj)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"Row {row_idx}: {exc}")
 
-        BATCH = 1000
-        for i in range(0, len(to_create), BATCH):
-            ProfessionDemandStatus.objects.bulk_create(to_create[i:i + BATCH])
-        for i in range(0, len(to_update), BATCH):
-            ProfessionDemandStatus.objects.bulk_update(to_update[i:i + BATCH], ["is_demanded"])
+        self._bulk_create_demand_statuses(to_create)
+        self._bulk_update_demand_statuses(to_update)
 
         return {
             "created_professions": created_professions,
@@ -572,16 +609,14 @@ class DemandMatrixImportView(APIView):
                         is_demanded=is_demanded,
                     ))
                 elif obj.is_demanded != is_demanded:
+                    obj._previous_is_demanded = obj.is_demanded
                     obj.is_demanded = is_demanded
                     to_update.append(obj)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"Row {row_idx}: {exc}")
 
-        BATCH = 1000
-        for i in range(0, len(to_create), BATCH):
-            ProfessionDemandStatus.objects.bulk_create(to_create[i:i + BATCH])
-        for i in range(0, len(to_update), BATCH):
-            ProfessionDemandStatus.objects.bulk_update(to_update[i:i + BATCH], ["is_demanded"])
+        self._bulk_create_demand_statuses(to_create)
+        self._bulk_update_demand_statuses(to_update)
 
         return {
             "created_professions": created_professions,
@@ -1217,18 +1252,14 @@ class DemandMatrixImportApplyView(DemandMatrixImportView):
                             is_demanded=is_demanded,
                         ))
                     elif obj.is_demanded != is_demanded:
+                        obj._previous_is_demanded = obj.is_demanded
                         obj.is_demanded = is_demanded
                         to_update.append(obj)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"Row {row_idx}: {exc}")
 
-        BATCH = 1000
-        for i in range(0, len(to_create), BATCH):
-            ProfessionDemandStatus.objects.bulk_create(to_create[i:i + BATCH])
-        for i in range(0, len(to_update), BATCH):
-            ProfessionDemandStatus.objects.bulk_update(
-                to_update[i:i + BATCH], ["is_demanded"],
-            )
+        self._bulk_create_demand_statuses(to_create)
+        self._bulk_update_demand_statuses(to_update)
 
         return {
             "created_professions": counters["created_professions"],
@@ -1356,18 +1387,14 @@ class DemandMatrixImportApplyView(DemandMatrixImportView):
                         is_demanded=is_demanded,
                     ))
                 elif obj.is_demanded != is_demanded:
+                    obj._previous_is_demanded = obj.is_demanded
                     obj.is_demanded = is_demanded
                     to_update.append(obj)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"Row {row_idx}: {exc}")
 
-        BATCH = 1000
-        for i in range(0, len(to_create), BATCH):
-            ProfessionDemandStatus.objects.bulk_create(to_create[i:i + BATCH])
-        for i in range(0, len(to_update), BATCH):
-            ProfessionDemandStatus.objects.bulk_update(
-                to_update[i:i + BATCH], ["is_demanded"],
-            )
+        self._bulk_create_demand_statuses(to_create)
+        self._bulk_update_demand_statuses(to_update)
 
         return {
             "created_professions": counters["created_professions"],
@@ -1495,6 +1522,7 @@ class DemandMatrixView(generics.ListAPIView):
         profession_ids = request.query_params.get("profession_ids")
         region_ids = request.query_params.get("region_ids")
         federal_operator_ids = request.query_params.get("federal_operator_ids")
+        demand_import_ids = request.query_params.get("demand_import_ids")
         demanded_only = request.query_params.get("demanded_only", "").lower() == "true"
         approval_statuses = request.query_params.get("approval_statuses")
 
@@ -1527,14 +1555,16 @@ class DemandMatrixView(generics.ListAPIView):
             ids = [int(x) for x in federal_operator_ids.split(",")]
             statuses = statuses.filter(federal_operator_id__in=ids)
 
-        # Operators participating in matrix slice (not all organizations).
-        operator_ids = list(
-            statuses.values_list("federal_operator_id", flat=True).distinct()
-        )
+        # All federal operators (project role) — for «missing in FO» comparison, not only
+        # operators that already have demand rows (otherwise FO without import vanish).
+        operators_qs = Organization.objects.filter(
+            project_memberships__role=ProjectOrganizationMembershipRole.FEDERAL_OPERATOR,
+        ).distinct()
+        if federal_operator_ids:
+            ids = [int(x) for x in federal_operator_ids.split(",")]
+            operators_qs = operators_qs.filter(id__in=ids)
         operators = list(
-            Organization.objects.filter(id__in=operator_ids)
-            .values("id", "short_name", "name")
-            .order_by("name")
+            operators_qs.values("id", "short_name", "name").order_by("name")
         )
         operator_display = {
             o["id"]: (o["short_name"] or o["name"]).strip() or o["name"]
@@ -1569,6 +1599,72 @@ class DemandMatrixView(generics.ListAPIView):
             )
         }
 
+        demand_imports_qs = DemandImport.objects.filter(year=year).select_related(
+            "federal_operator",
+        )
+        if federal_operator_ids:
+            ids = [int(x) for x in federal_operator_ids.split(",")]
+            demand_imports_qs = demand_imports_qs.filter(federal_operator_id__in=ids)
+        demand_imports_qs = demand_imports_qs.order_by("-imported_at", "-id")
+        demand_import_options = []
+        for demand_import in demand_imports_qs[:100]:
+            operator = demand_import.federal_operator
+            operator_name = (operator.short_name or operator.name).strip() or operator.name
+            demand_import_options.append({
+                "id": demand_import.id,
+                "federal_operator_id": demand_import.federal_operator_id,
+                "federal_operator_name": operator_name,
+                "imported_at": demand_import.imported_at.isoformat(),
+                "snapshot_count": demand_import.snapshot_count,
+            })
+
+        selected_import_ids = [
+            int(x) for x in (demand_import_ids or "").split(",") if x.strip().isdigit()
+        ]
+        if selected_import_ids:
+            history_imports = list(demand_imports_qs.filter(id__in=selected_import_ids))
+        else:
+            history_imports = []
+            seen_operator_ids = set()
+            for demand_import in demand_imports_qs:
+                if demand_import.federal_operator_id in seen_operator_ids:
+                    continue
+                seen_operator_ids.add(demand_import.federal_operator_id)
+                history_imports.append(demand_import)
+        history_import_ids = [item.id for item in history_imports]
+
+        snapshot_rows = DemandImportSnapshot.objects.filter(
+            demand_import_id__in=history_import_ids,
+        ).select_related("demand_import__federal_operator")
+        if region_ids:
+            ids = [int(x) for x in region_ids.split(",")]
+            snapshot_rows = snapshot_rows.filter(region_id__in=ids)
+        if profession_ids:
+            ids = [int(x) for x in profession_ids.split(",")]
+            snapshot_rows = snapshot_rows.filter(profession_id__in=ids)
+
+        history_by_cell = {}
+        for item in snapshot_rows.order_by("-demand_import__imported_at", "-demand_import_id")[:30000]:
+            if not item.profession_id or not item.region_id:
+                continue
+            key = (item.profession_id, item.region_id)
+            cell_history = history_by_cell.setdefault(key, [])
+            if len(cell_history) >= 8:
+                continue
+            demand_import = item.demand_import
+            operator = demand_import.federal_operator
+            operator_name = (operator.short_name or operator.name).strip() or operator.name
+            cell_history.append({
+                "id": item.id,
+                "source": "import",
+                "demand_import_id": item.demand_import_id,
+                "federal_operator_id": demand_import.federal_operator_id,
+                "federal_operator_name": operator_name,
+                "previous_is_demanded": None,
+                "new_is_demanded": item.is_demanded,
+                "changed_at": demand_import.imported_at.isoformat(),
+            })
+
         region_list = list(regions.values("id", "name"))
         profession_list = list(professions.values("id", "number", "name"))
 
@@ -1577,6 +1673,7 @@ class DemandMatrixView(generics.ListAPIView):
             region_demands = {}
             region_approvals = {}
             region_missing_operators = {}
+            region_history = {}
             has_any = False
             for r in region_list:
                 cell_key = (prof["id"], r["id"])
@@ -1597,6 +1694,9 @@ class DemandMatrixView(generics.ListAPIView):
                     ]
                     if missing:
                         region_missing_operators[str(r["id"])] = missing
+                cell_history = history_by_cell.get(cell_key)
+                if cell_history:
+                    region_history[str(r["id"])] = cell_history
                 if val:
                     has_any = True
             if demanded_only and not has_any:
@@ -1608,6 +1708,7 @@ class DemandMatrixView(generics.ListAPIView):
                 "regions": region_demands,
                 "approvals": region_approvals,
                 "region_missing_operators": region_missing_operators,
+                "demand_history": region_history,
             })
 
         return Response({
@@ -1618,4 +1719,5 @@ class DemandMatrixView(generics.ListAPIView):
                 {"id": o["id"], "short_name": operator_display[o["id"]]}
                 for o in operators
             ],
+            "demand_imports": demand_import_options,
         })
