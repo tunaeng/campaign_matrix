@@ -13,12 +13,15 @@ from django.db import transaction
 from django.db.models import Exists, OuterRef, ProtectedError
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes, action
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from django.utils import timezone
 from django.utils.text import slugify
 from apps.reference.models import Region
+from apps.campaigns.models import Lead, LeadChecklistValue, LeadInteraction
+from .deletion import contact_deletion_blockers, organization_deletion_blockers
 from .models import (
     Organization,
     OrganizationInteraction,
@@ -693,10 +696,26 @@ def _rollback_import_batch(batch: ImportBatch, actor):
         try:
             if record.action == ImportBatchRecord.Action.CREATED:
                 if record.organization_id and Organization.objects.filter(id=record.organization_id).exists():
-                    record.organization.delete()
+                    org = record.organization
+                    blockers = organization_deletion_blockers(org)
+                    if blockers:
+                        errors.append(
+                            f"Не удалось удалить {org}: {'; '.join(blockers)}"
+                        )
+                        skipped += 1
+                        continue
+                    org.delete()
                     deleted += 1
                 elif record.contact_id and Contact.objects.filter(id=record.contact_id).exists():
-                    record.contact.delete()
+                    contact = record.contact
+                    blockers = contact_deletion_blockers(contact)
+                    if blockers:
+                        errors.append(
+                            f"Не удалось удалить {contact}: {'; '.join(blockers)}"
+                        )
+                        skipped += 1
+                        continue
+                    contact.delete()
                     deleted += 1
                 else:
                     skipped += 1
@@ -895,7 +914,31 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         if project_id or role:
             qs = qs.distinct()
 
+        qs = qs.annotate(
+            _has_project_membership=Exists(
+                ProjectOrganizationMembership.objects.filter(
+                    organization=OuterRef("pk")
+                )
+            ),
+            _has_interaction_history=Exists(
+                OrganizationInteraction.objects.filter(
+                    organization=OuterRef("pk")
+                )
+            ),
+            _has_leads=Exists(
+                Lead.objects.filter(organization=OuterRef("pk"))
+            ),
+        )
+
         return qs
+
+    def perform_destroy(self, instance):
+        reasons = organization_deletion_blockers(instance)
+        if reasons:
+            raise ValidationError(
+                {"detail": "Удаление недоступно: " + "; ".join(reasons)}
+            )
+        instance.delete()
 
     @action(detail=True, methods=["get"], url_path="change-log")
     def change_log(self, request, pk=None):
@@ -1254,7 +1297,31 @@ class ContactViewSet(viewsets.ModelViewSet):
             if ids:
                 qs = qs.filter(tags__id__in=ids).distinct()
 
+        qs = qs.annotate(
+            _org_has_project_membership=Exists(
+                ProjectOrganizationMembership.objects.filter(
+                    organization=OuterRef("organization_id")
+                )
+            ),
+            _has_interaction_history=Exists(
+                LeadInteraction.objects.filter(contact=OuterRef("pk"))
+            ),
+            _has_lead_links=Exists(
+                Lead.objects.filter(primary_contact=OuterRef("pk"))
+            ) | Exists(
+                LeadChecklistValue.objects.filter(contact=OuterRef("pk"))
+            ),
+        )
+
         return qs
+
+    def perform_destroy(self, instance):
+        reasons = contact_deletion_blockers(instance)
+        if reasons:
+            raise ValidationError(
+                {"detail": "Удаление недоступно: " + "; ".join(reasons)}
+            )
+        instance.delete()
 
     @action(detail=True, methods=["get"], url_path="change-log")
     def change_log(self, request, pk=None):

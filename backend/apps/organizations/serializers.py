@@ -6,6 +6,7 @@ from django.core.validators import validate_unicode_slug
 from django.utils.text import slugify
 from rest_framework import serializers
 
+from .deletion import contact_deletion_blockers, organization_deletion_blockers
 from .models import (
     Organization,
     OrganizationInteraction,
@@ -99,6 +100,8 @@ class OrganizationSerializer(serializers.ModelSerializer):
         required=False,
     )
     tag_names = serializers.SerializerMethodField()
+    can_delete = serializers.SerializerMethodField()
+    deletion_block_reasons = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
@@ -109,6 +112,7 @@ class OrganizationSerializer(serializers.ModelSerializer):
             "contact_phone", "contact_phone_extension", "is_our_side", "description", "tags", "tag_names",
             "notes", "has_interaction_history",
             "last_interaction_date", "interactions_count",
+            "can_delete", "deletion_block_reasons",
             "created_at", "updated_at",
         ]
 
@@ -128,6 +132,12 @@ class OrganizationSerializer(serializers.ModelSerializer):
 
     def get_tag_names(self, obj):
         return list(obj.tags.values_list("name", flat=True))
+
+    def get_can_delete(self, obj):
+        return not organization_deletion_blockers(obj)
+
+    def get_deletion_block_reasons(self, obj):
+        return organization_deletion_blockers(obj)
 
     def validate(self, attrs):
         org_type = attrs.get("org_type")
@@ -207,6 +217,8 @@ class ContactSerializer(serializers.ModelSerializer):
         required=False,
     )
     tag_names = serializers.SerializerMethodField()
+    can_delete = serializers.SerializerMethodField()
+    deletion_block_reasons = serializers.SerializerMethodField()
 
     class Meta:
         model = Contact
@@ -218,12 +230,19 @@ class ContactSerializer(serializers.ModelSerializer):
             "is_manager", "department_name", "full_name",
             "tags", "tag_names",
             "bitrix_contact_id",
+            "can_delete", "deletion_block_reasons",
             "created_at", "updated_at",
         ]
         read_only_fields = ["id", "bitrix_contact_id", "created_at", "updated_at"]
 
     def get_tag_names(self, obj):
         return list(obj.tags.order_by("name").values_list("name", flat=True))
+
+    def get_can_delete(self, obj):
+        return not contact_deletion_blockers(obj)
+
+    def get_deletion_block_reasons(self, obj):
+        return contact_deletion_blockers(obj)
 
 
 class EntityFieldChangeSerializer(serializers.ModelSerializer):
