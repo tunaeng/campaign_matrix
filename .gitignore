@@ -27,6 +27,11 @@ frontend/.vite/
 frontend/.cache/
 *.tsbuildinfo
 
+# DB dumps (local deploy artifacts)
+backend/data/dumps/*.dump
+backend/data/dumps/*.sql
+backend/data/dumps/*.sql.gz
+
 # Logs
 *.log
 logs/
