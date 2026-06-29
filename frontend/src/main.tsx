@@ -7,6 +7,7 @@ import { ConfigProvider, App as AntApp } from 'antd';
 import ruRU from 'antd/locale/ru_RU';
 import App from './App';
 import './index.css';
+import './styles/responsive.css';
 
 const queryClient = new QueryClient({
   defaultOptions: {

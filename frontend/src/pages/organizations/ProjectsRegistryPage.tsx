@@ -10,9 +10,9 @@ import {
   Select,
   Spin,
   Space,
-  Table,
   Typography,
 } from 'antd';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
 import { DeleteOutlined, EditOutlined, PlusOutlined, TeamOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { SelectProps } from 'antd/es/select';
@@ -342,11 +342,11 @@ export default function ProjectsRegistryPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>
           Управление проектами
         </Typography.Title>
-        <Space>
+        <Space className="filter-bar" wrap>
           <Input.Search
             allowClear
             placeholder="Поиск по названию или коду"
-            style={{ width: 320 }}
+            style={{ width: 320, maxWidth: '100%' }}
             onSearch={setSearch}
           />
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreateProject}>
@@ -355,7 +355,7 @@ export default function ProjectsRegistryPage() {
         </Space>
       </div>
 
-      <Table<Project>
+      <ResponsiveTable<Project>
         rowKey="id"
         loading={projectsLoading}
         dataSource={projects}
@@ -420,7 +420,7 @@ export default function ProjectsRegistryPage() {
         ]}
         width={980}
       >
-        <Table<ProjectMembership>
+        <ResponsiveTable<ProjectMembership>
           rowKey="id"
           loading={membershipsLoading}
           dataSource={memberships}

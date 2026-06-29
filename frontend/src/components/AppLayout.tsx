@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Button, Typography, Space } from 'antd';
+import { Layout, Menu, Button, Typography, Space, Drawer } from 'antd';
 import {
   FundProjectionScreenOutlined,
   PlusOutlined,
@@ -13,8 +14,10 @@ import {
   HistoryOutlined,
   TagsOutlined,
   ProjectOutlined,
+  MenuOutlined,
 } from '@ant-design/icons';
 import { useMe } from '../api/hooks';
+import { useIsMobile } from '../hooks/useResponsive';
 
 const { Header, Content, Sider } = Layout;
 
@@ -22,6 +25,8 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { data: user } = useMe();
+  const isMobile = useIsMobile();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const handleLogout = () => {
     localStorage.removeItem('access_token');
@@ -117,63 +122,110 @@ export default function AppLayout() {
     },
   ];
 
+  const handleMenuClick = ({ key }: { key: string }) => {
+    setMenuOpen(false);
+    navigate(key);
+  };
+
+  const brand = (
+    <div style={{
+      padding: '20px 16px 12px',
+      borderBottom: '1px solid #f0f0f0',
+    }}>
+      <Typography.Title level={4} style={{ margin: 0, fontSize: 16 }}>
+        Матрица потребности
+      </Typography.Title>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        Кампании по сбору потребности
+      </Typography.Text>
+    </div>
+  );
+
+  const menu = (
+    <Menu
+      mode="inline"
+      selectedKeys={[selectedMenuKey]}
+      defaultOpenKeys={['/demand-professions', '/directories']}
+      items={menuItems}
+      onClick={handleMenuClick}
+      style={{ borderRight: 0, marginTop: 8 }}
+    />
+  );
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider
-        width={260}
-        theme="light"
-        style={{
-          borderRight: '1px solid #f0f0f0',
-          position: 'fixed',
-          left: 0,
-          top: 0,
-          bottom: 0,
-          overflow: 'auto',
-        }}
-      >
-        <div style={{
-          padding: '20px 16px 12px',
-          borderBottom: '1px solid #f0f0f0',
-        }}>
-          <Typography.Title level={4} style={{ margin: 0, fontSize: 16 }}>
-            Матрица потребности
-          </Typography.Title>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Кампании по сбору потребности
-          </Typography.Text>
-        </div>
-        <Menu
-          mode="inline"
-          selectedKeys={[selectedMenuKey]}
-          defaultOpenKeys={['/demand-professions', '/directories']}
-          items={menuItems}
-          onClick={({ key }) => navigate(key)}
-          style={{ borderRight: 0, marginTop: 8 }}
-        />
-      </Sider>
-      <Layout style={{ marginLeft: 260 }}>
+      {!isMobile && (
+        <Sider
+          width={260}
+          theme="light"
+          style={{
+            borderRight: '1px solid #f0f0f0',
+            position: 'fixed',
+            left: 0,
+            top: 0,
+            bottom: 0,
+            overflow: 'auto',
+          }}
+        >
+          {brand}
+          {menu}
+        </Sider>
+      )}
+      {isMobile && (
+        <Drawer
+          placement="left"
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          width={280}
+          styles={{ body: { padding: 0 } }}
+          closable={false}
+        >
+          {brand}
+          {menu}
+        </Drawer>
+      )}
+      <Layout style={{ marginLeft: isMobile ? 0 : 260 }}>
         <Header style={{
           background: '#fff',
-          padding: '0 24px',
+          padding: isMobile ? '0 12px' : '0 24px',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'flex-end',
+          justifyContent: isMobile ? 'space-between' : 'flex-end',
           borderBottom: '1px solid #f0f0f0',
           height: 48,
+          position: isMobile ? 'sticky' : 'static',
+          top: 0,
+          zIndex: 10,
         }}>
+          {isMobile && (
+            <Space size={8}>
+              <Button
+                type="text"
+                icon={<MenuOutlined />}
+                onClick={() => setMenuOpen(true)}
+                aria-label="Открыть меню"
+              />
+              <Typography.Text strong style={{ fontSize: 14 }}>
+                Матрица потребности
+              </Typography.Text>
+            </Space>
+          )}
           <Space>
-            <Typography.Text>{user?.full_name || user?.username}</Typography.Text>
+            {!isMobile && <Typography.Text>{user?.full_name || user?.username}</Typography.Text>}
             <Button
               type="text"
               icon={<LogoutOutlined />}
               onClick={handleLogout}
               size="small"
             >
-              Выйти
+              {isMobile ? null : 'Выйти'}
             </Button>
           </Space>
         </Header>
-        <Content style={{ padding: 24, background: '#f5f5f5', minHeight: 'calc(100vh - 48px)' }}>
+        <Content
+          className="app-content"
+          style={{ padding: 24, background: '#f5f5f5', minHeight: 'calc(100vh - 48px)' }}
+        >
           <Outlet />
         </Content>
       </Layout>

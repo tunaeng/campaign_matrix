@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
-import { Table, Tag, Select, Space, Typography, Input, Switch, Popover } from 'antd';
+import { Tag, Select, Space, Typography, Input, Switch, Popover } from 'antd';
+import ResponsiveTable from '../../../components/responsive/ResponsiveTable';
 import { CheckCircleOutlined, ClockCircleOutlined, FileOutlined, EnvironmentOutlined } from '@ant-design/icons';
 import { usePrograms, useFederalOperators, useProfessions, useDemandMatrix } from '../../../api/hooks';
 import type { CampaignFormData } from '../CampaignCreatePage';
@@ -155,7 +156,7 @@ export default function StepPrograms({ data, onChange }: Props) {
         Выберите программы для включения в кампанию. Используйте фильтры для поиска по статусу в договорах и востребованности.
       </Typography.Text>
 
-      <Space wrap style={{ marginBottom: 16 }}>
+      <Space className="filter-bar" wrap style={{ marginBottom: 16 }}>
         <Input
           placeholder="Поиск программы"
           value={search}
@@ -221,7 +222,7 @@ export default function StepPrograms({ data, onChange }: Props) {
         </Space>
       </Space>
 
-      <Table
+      <ResponsiveTable
         dataSource={allPrograms}
         columns={columns}
         rowKey="id"

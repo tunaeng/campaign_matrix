@@ -8,13 +8,13 @@ import {
   Modal,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
   Upload,
 } from 'antd';
 import type { UploadFile } from 'antd/es/upload/interface';
 import type { Contact } from '../../types';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
 import {
   useContacts,
   useCreateContact,
@@ -230,7 +230,7 @@ export default function ContactsRegistryPage() {
         </Space>
       </div>
 
-      <Space wrap size="middle" style={{ marginBottom: 12 }}>
+      <Space className="filter-bar" wrap size="middle" style={{ marginBottom: 12 }}>
         <Input.Search
           allowClear
           style={{ width: 260 }}
@@ -294,7 +294,7 @@ export default function ContactsRegistryPage() {
         </Typography.Text>
       )}
 
-      <Table<Contact>
+      <ResponsiveTable<Contact>
         rowKey="id"
         loading={contactsQuery.isLoading || contactsQuery.isFetching}
         dataSource={rows}

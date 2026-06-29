@@ -29,8 +29,9 @@ export default function LoginPage() {
       alignItems: 'center',
       justifyContent: 'center',
       background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      padding: 16,
     }}>
-      <Card style={{ width: 400, boxShadow: '0 8px 40px rgba(0,0,0,0.12)' }}>
+      <Card style={{ width: '100%', maxWidth: 400, boxShadow: '0 8px 40px rgba(0,0,0,0.12)' }}>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <div style={{ textAlign: 'center' }}>
             <Typography.Title level={3} style={{ marginBottom: 4 }}>

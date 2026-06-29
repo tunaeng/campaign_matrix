@@ -479,7 +479,7 @@ export default function LeadDetailPage() {
         borderBottom: '1px solid #f5f5f5',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center' }}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', rowGap: 6 }}>
         <Checkbox
           checked={value.is_completed}
           disabled={readOnly}
@@ -497,7 +497,7 @@ export default function LeadDetailPage() {
             allowClear
             size="small"
             placeholder="Ответственный специалист"
-            style={{ minWidth: 260, marginLeft: 12 }}
+            style={{ minWidth: 260, maxWidth: '100%', marginLeft: 12 }}
             value={value.primary_contact_specialist ?? undefined}
             options={specialistOptions}
             onChange={(v) => handleUpdateField(value.id, 'primary_contact_specialist', v ?? null)}
@@ -756,12 +756,12 @@ export default function LeadDetailPage() {
       >
         <Form form={demandForm} layout="vertical">
           <Row gutter={12}>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="forecast_demand" label="План (прогноз)">
                 <InputNumber min={0} style={{ width: '100%' }} placeholder="чел." />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="demand_quota_list" label="Списочная (факт)">
                 <InputNumber min={0} style={{ width: '100%' }} />
               </Form.Item>
@@ -769,7 +769,7 @@ export default function LeadDetailPage() {
           </Row>
           <Typography.Text strong>Квота</Typography.Text>
           <Row gutter={12} style={{ marginTop: 8 }}>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="demand_quota_declared" label="Заявленная">
                 <InputNumber min={0} style={{ width: '100%' }} />
               </Form.Item>
@@ -956,7 +956,7 @@ export default function LeadDetailPage() {
           </Button>
         }
       >
-        <Space wrap style={{ marginBottom: 16 }} align="center">
+        <Space className="filter-bar" wrap style={{ marginBottom: 16 }} align="center">
           <Typography.Text type="secondary">Фильтр:</Typography.Text>
           <Select
             allowClear

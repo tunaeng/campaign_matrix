@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
-import { DatePicker, Select, Space, Table, Typography } from 'antd';
+import { DatePicker, Select, Space, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useCommunicationHistory, useOrganizations, useProjects } from '../../api/hooks';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
 
 export default function CommunicationHistoryPage() {
   const [project, setProject] = useState<number | undefined>();
@@ -25,7 +26,7 @@ export default function CommunicationHistoryPage() {
   return (
     <div>
       <Typography.Title level={4}>История коммуникаций</Typography.Title>
-      <Space style={{ marginBottom: 12 }} wrap>
+      <Space className="filter-bar" style={{ marginBottom: 12 }} wrap>
         <Select
           allowClear
           placeholder="Проект"
@@ -60,7 +61,7 @@ export default function CommunicationHistoryPage() {
         />
       </Space>
 
-      <Table
+      <ResponsiveTable
         rowKey="id"
         loading={isLoading}
         dataSource={data || []}

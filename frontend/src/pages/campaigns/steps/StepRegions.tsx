@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
-import { Table, Select, Space, Typography, Tag, Button, Input, Switch } from 'antd';
+import { Select, Space, Typography, Tag, Button, Input, Switch } from 'antd';
+import ResponsiveTable from '../../../components/responsive/ResponsiveTable';
 import { useRegions, useFederalDistricts, usePrograms, useDemandMatrix } from '../../../api/hooks';
 import type { CampaignFormData } from '../CampaignCreatePage';
 import type { Region } from '../../../types';
@@ -172,7 +173,7 @@ export default function StepRegions({ data, onChange }: Props) {
         />
       </div>
 
-      <Space wrap style={{ marginBottom: 16 }}>
+      <Space className="filter-bar" wrap style={{ marginBottom: 16 }}>
         <Select
           placeholder="Фильтр по округу"
           allowClear
@@ -195,7 +196,7 @@ export default function StepRegions({ data, onChange }: Props) {
         </Space>
       </Space>
 
-      <Table
+      <ResponsiveTable
         dataSource={filteredRegions}
         columns={columns}
         rowKey="id"

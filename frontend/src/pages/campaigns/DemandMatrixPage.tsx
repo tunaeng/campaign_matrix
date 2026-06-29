@@ -591,7 +591,7 @@ export default function DemandMatrixPage() {
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {/* Строка 1: Поиск + Только с востребованностью */}
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div className="filter-bar" style={{ gap: 12 }}>
               <Input
                 placeholder="Поиск профессии"
                 value={search}
@@ -606,7 +606,7 @@ export default function DemandMatrixPage() {
             </div>
 
             {/* Строка 2: Переключение вида + Год + ФО */}
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div className="filter-bar" style={{ gap: 12 }}>
               <Segmented
                 value={viewMode}
                 onChange={(v) => setViewMode(v as ViewMode)}
@@ -647,7 +647,7 @@ export default function DemandMatrixPage() {
             </div>
 
             {/* Строка 3: Фильтры по профессиям, регионам и статусам одобрения */}
-            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <div className="filter-bar" style={{ gap: 12, alignItems: 'flex-start' }}>
               <Select
                 mode="multiple"
                 placeholder="Фильтр по профессиям"

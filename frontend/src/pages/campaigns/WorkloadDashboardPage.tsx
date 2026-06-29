@@ -1,5 +1,6 @@
 import { Column, Pie } from '@ant-design/charts';
-import { Card, Col, Collapse, DatePicker, Empty, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd';
+import { Card, Col, Collapse, DatePicker, Empty, Row, Select, Space, Statistic, Tabs, Tag, Typography } from 'antd';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
 import type { Dayjs } from 'dayjs';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -169,7 +170,7 @@ function ManagerDetail({
 }) {
   return (
     <>
-      <Table
+      <ResponsiveTable
         size="small"
         loading={isLoading}
         rowKey={(row) => `manager-${row.user_id}`}
@@ -213,7 +214,7 @@ function ManagerDetail({
               <Space direction="vertical" style={{ width: '100%' }}>
                 {managerItem.campaigns.map((campaignItem) => (
                   <Card key={campaignItem.campaign_id} size="small" title={campaignItem.campaign_name}>
-                    <Table
+                    <ResponsiveTable
                       size="small"
                       rowKey={(leadRow) => String(leadRow.lead_id)}
                       pagination={{ pageSize: 5 }}
@@ -283,7 +284,7 @@ function SpecialistDetail({
 
   return (
     <>
-      <Table
+      <ResponsiveTable
         size="small"
         loading={isLoading}
         rowKey={(row) => `specialist-${row.user_id}`}
@@ -321,7 +322,7 @@ function SpecialistDetail({
               key: String(specialistItem.user_id),
               label: `${specialistItem.user_name} — просрочено: ${overdueTotal}`,
               children: (
-                <Table<SpecialistCampaignStatsRow>
+                <ResponsiveTable<SpecialistCampaignStatsRow>
                   size="small"
                   pagination={campaignRows.length > 10 ? { pageSize: 10 } : false}
                   rowKey="key"
@@ -329,7 +330,7 @@ function SpecialistDetail({
                   expandable={{
                     rowExpandable: (row) => (row.templates?.length || 0) > 0,
                     expandedRowRender: (row) => (
-                      <Table
+                      <ResponsiveTable
                         size="small"
                         pagination={false}
                         rowKey="key"
@@ -464,7 +465,7 @@ export default function WorkloadDashboardPage() {
       />
 
       <Card size="small" style={{ marginBottom: 16 }}>
-        <Space wrap>
+        <Space className="filter-bar" wrap>
           <DatePicker.RangePicker
             allowClear
             value={period}
@@ -509,32 +510,32 @@ export default function WorkloadDashboardPage() {
       </Card>
 
       <Row gutter={12} style={{ marginBottom: 12 }}>
-        <Col span={4}>
+        <Col xs={12} sm={8} xl={4}>
           <Card size="small">
             <Statistic title="Активные лиды" value={totals.active_leads} />
           </Card>
         </Col>
-        <Col span={4}>
+        <Col xs={12} sm={8} xl={4}>
           <Card size="small">
             <Statistic title="Невыполненные пункты" value={totals.pending_checklist} />
           </Card>
         </Col>
-        <Col span={4}>
+        <Col xs={12} sm={8} xl={4}>
           <Card size="small">
             <Statistic title="Открытые задачи" value={totals.tasks_in_progress} />
           </Card>
         </Col>
-        <Col span={4}>
+        <Col xs={12} sm={8} xl={4}>
           <Card size="small">
             <Statistic title="Просроченные этапы" value={totals.overdue_stage} valueStyle={{ color: '#cf1322' }} />
           </Card>
         </Col>
-        <Col span={4}>
+        <Col xs={12} sm={8} xl={4}>
           <Card size="small">
             <Statistic title="Просроченный чек-лист" value={totals.overdue_checklist} valueStyle={{ color: '#cf1322' }} />
           </Card>
         </Col>
-        <Col span={4}>
+        <Col xs={12} sm={8} xl={4}>
           <Card size="small">
             <Statistic title="Просроченные задачи" value={totals.tasks_overdue} valueStyle={{ color: '#cf1322' }} />
           </Card>
@@ -542,7 +543,7 @@ export default function WorkloadDashboardPage() {
       </Row>
 
       <Row gutter={12} style={{ marginBottom: 12 }}>
-        <Col span={12}>
+        <Col xs={24} lg={12}>
           <Card size="small" title="По кампаниям">
             <Column
               data={columnChartData}
@@ -554,7 +555,7 @@ export default function WorkloadDashboardPage() {
             />
           </Card>
         </Col>
-        <Col span={12}>
+        <Col xs={24} lg={12}>
           <Card size="small" title="Статусы">
             <Pie
               data={pieChartData}

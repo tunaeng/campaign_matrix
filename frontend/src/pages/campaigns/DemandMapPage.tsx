@@ -75,7 +75,7 @@ export default function DemandMapPage() {
         </div>
       ) : (
         <Card styles={{ body: { padding: 16, overflow: 'auto' } }}>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+          <div className="filter-bar" style={{ gap: 12, marginBottom: 12 }}>
             <Select
               placeholder="Год"
               value={year}

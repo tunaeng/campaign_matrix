@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Typography, Button, Space, Spin, Input, Switch, Form, Modal,
-  Select, InputNumber, Collapse, Tag, Popconfirm, App, Empty, Tooltip, Table,
+  Select, InputNumber, Collapse, Tag, Popconfirm, App, Empty, Tooltip,
 } from 'antd';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
 import {
   ArrowLeftOutlined, ArrowUpOutlined, ArrowDownOutlined,
   PlusOutlined, DeleteOutlined, EditOutlined, SaveOutlined,
@@ -471,7 +472,7 @@ export default function FunnelDetailPage() {
                 value={nameValue}
                 onChange={(e) => setNameValue(e.target.value)}
                 onPressEnter={handleSaveName}
-                style={{ width: 400 }}
+                style={{ width: 400, maxWidth: '100%' }}
               />
               <Button icon={<SaveOutlined />} type="primary" size="small" onClick={handleSaveName} />
             </Space>
@@ -554,7 +555,7 @@ export default function FunnelDetailPage() {
           </Space>
         )}
       >
-        <Table
+        <ResponsiveTable
           size="small"
           rowKey="id"
           pagination={false}

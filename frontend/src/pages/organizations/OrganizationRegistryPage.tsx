@@ -15,6 +15,7 @@ import {
   Typography,
   Upload,
 } from 'antd';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
 import type { UploadFile } from 'antd/es/upload/interface';
 import type { ColumnsType } from 'antd/es/table';
 import type { SelectProps } from 'antd/es/select';
@@ -517,7 +518,7 @@ export default function OrganizationRegistryPage() {
         </Space>
       </div>
 
-      <Space style={{ marginBottom: 12 }} wrap size="middle">
+      <Space className="filter-bar" style={{ marginBottom: 12 }} wrap size="middle">
         <Input.Search
           placeholder="Поиск по названию / ИНН"
           allowClear
@@ -638,7 +639,7 @@ export default function OrganizationRegistryPage() {
         страницы. При массовом действии смотрите индикатор загрузки в таблице и текст прогресса в уведомлении.
       </Typography.Text>
 
-      <Table
+      <ResponsiveTable
         rowKey="id"
         loading={isLoading || isFetching || bulkActionBusy}
         dataSource={organizations}

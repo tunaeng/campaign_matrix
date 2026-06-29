@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Card,
-  Table,
   Button,
   Space,
   Typography,
@@ -22,6 +21,7 @@ import {
   Collapse,
 } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
 import {
   useFunnels,
   useCreateFunnel,
@@ -338,7 +338,7 @@ export default function FunnelListPage() {
 
   return (
     <div>
-      <Space style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
+      <Space style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>Воронки (сценарии)</Typography.Title>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
           Создать воронку
@@ -360,17 +360,17 @@ export default function FunnelListPage() {
             label: 'Воронки кампаний',
             children: (
               <Card>
-                <Space style={{ marginBottom: 12 }}>
+                <Space className="filter-bar" style={{ marginBottom: 12 }} wrap>
                   <Typography.Text type="secondary">Фильтр по тегам:</Typography.Text>
                   <EntityTagSelect
                     availableTags={tagsCatalog?.results ?? []}
                     value={tagFilter}
                     onChange={setTagFilter}
                     placeholder="Все воронки"
-                    style={{ minWidth: 260 }}
+                    style={{ minWidth: 260, maxWidth: '100%' }}
                   />
                 </Space>
-                <Table
+                <ResponsiveTable
                   dataSource={funnels?.results || []}
                   columns={columns}
                   rowKey="id"
@@ -389,7 +389,7 @@ export default function FunnelListPage() {
                   Системные воронки задач. Редактируйте стадии и чеклисты здесь; привязку к стадиям воронки кампании
                   настраивайте на странице конкретной воронки кампании.
                 </Typography.Paragraph>
-                <Table
+                <ResponsiveTable
                   dataSource={taskFunnels}
                   columns={taskTemplateColumns}
                   rowKey="id"
@@ -539,7 +539,7 @@ export default function FunnelListPage() {
                 </Button>
               )}
             >
-              <Table
+              <ResponsiveTable
                 size="small"
                 rowKey="id"
                 pagination={false}

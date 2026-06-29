@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { Card, Table, Button, Space, Typography, Modal, Form, Input, App, Select, Tag, ColorPicker } from 'antd';
+import { Card, Button, Space, Typography, Modal, Form, Input, App, Select, Tag, ColorPicker } from 'antd';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import {
   useOrganizationTags,
@@ -134,7 +135,7 @@ export default function TagsAdminPage() {
       </Space>
 
       <Card>
-        <Space style={{ marginBottom: 12 }} wrap>
+        <Space className="filter-bar" style={{ marginBottom: 12 }} wrap>
           <Input.Search
             allowClear
             style={{ width: 280 }}
@@ -166,7 +167,7 @@ export default function TagsAdminPage() {
             options={categories.map((c) => ({ value: c, label: c }))}
           />
         </Space>
-        <Table<OrganizationTag>
+        <ResponsiveTable<OrganizationTag>
           rowKey="id"
           loading={isLoading}
           dataSource={filteredRows}

@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
-import { Typography, Descriptions, Tag, Space, Divider, Table } from 'antd';
+import { Typography, Descriptions, Tag, Space, Divider } from 'antd';
+import ResponsiveTable from '../../../components/responsive/ResponsiveTable';
 import {
   usePrograms, useFederalOperators, useFunnels, useUsers, useRegions,
 } from '../../../api/hooks';
@@ -277,7 +278,7 @@ export default function StepReview({ data }: Props) {
           {collectRegionsRows.length === 0 ? (
             <Typography.Text type="secondary">Регионы не выбраны</Typography.Text>
           ) : (
-            <Table
+            <ResponsiveTable
               dataSource={collectRegionsRows}
               size="small"
               rowKey="region_id"
@@ -331,7 +332,7 @@ export default function StepReview({ data }: Props) {
               </Space>
             </Divider>
             {orgs.length > 0 ? (
-              <Table
+              <ResponsiveTable
                 dataSource={orgs}
                 columns={orgColumns}
                 rowKey="name"

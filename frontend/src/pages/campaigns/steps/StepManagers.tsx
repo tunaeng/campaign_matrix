@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
-  Typography, Table, Select, Button, Space, Tabs, Tooltip, Popover, Tag, Switch, Divider,
+  Typography, Select, Button, Space, Tabs, Tooltip, Popover, Tag, Switch, Divider,
   Radio, InputNumber, Card,
 } from 'antd';
+import ResponsiveTable from '../../../components/responsive/ResponsiveTable';
 import { ReloadOutlined, EditOutlined, UnorderedListOutlined, AppstoreOutlined, CheckCircleFilled, WarningFilled, QuestionCircleFilled } from '@ant-design/icons';
 import {
   useMe, useUsers, usePrograms, useFunnels, useExternalProfActivities, useDemandMatrix, useRegions,
@@ -101,7 +102,7 @@ function ProgramsCell({
   });
 
   const editor = (
-    <div style={{ width: 420 }}>
+    <div style={{ width: 420, maxWidth: '85vw' }}>
       <Select
         mode="multiple" style={{ width: '100%' }} size="small"
         value={programIds}
@@ -556,7 +557,7 @@ export default function StepManagers({ data, onChange }: Props) {
     return (
       <div>
         {/* Queue-level manager */}
-        <Space style={{ marginBottom: 12 }} wrap align="center">
+        <Space className="filter-bar" style={{ marginBottom: 12 }} wrap align="center">
           <Typography.Text>Менеджер для всей очереди:</Typography.Text>
           <Select style={{ width: 240 }} size="small" placeholder="Выбрать менеджера" allowClear
             value={queueManagerDraft[queueNumber]}
@@ -595,13 +596,13 @@ export default function StepManagers({ data, onChange }: Props) {
                     </Button>
                   </Space>
                 </Divider>
-                <Table dataSource={foOrgs} columns={buildColumns()} rowKey="name"
+                <ResponsiveTable dataSource={foOrgs} columns={buildColumns()} rowKey="name"
                   size="small" pagination={false} style={{ marginBottom: 8 }} />
               </div>
             );
           })
         ) : (
-          <Table dataSource={orgs} columns={buildColumns()} rowKey="name"
+          <ResponsiveTable dataSource={orgs} columns={buildColumns()} rowKey="name"
             size="small" pagination={{ pageSize: 20 }} />
         )}
       </div>
@@ -744,7 +745,7 @@ export default function StepManagers({ data, onChange }: Props) {
               Регионы отбора не выбраны. Вернитесь на предыдущий шаг.
             </Typography.Text>
           ) : (
-            <Table
+            <ResponsiveTable
               size="small"
               rowKey="region_id"
               pagination={false}

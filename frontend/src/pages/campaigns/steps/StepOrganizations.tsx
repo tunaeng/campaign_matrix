@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
 import {
-  Table, Select, TreeSelect, Space, Typography, Input, Tag, Button,
+  Select, TreeSelect, Space, Typography, Input, Tag, Button,
   Card, Tooltip, Popover,
 } from 'antd';
+import ResponsiveTable from '../../../components/responsive/ResponsiveTable';
 import { DeleteOutlined, WarningOutlined } from '@ant-design/icons';
 import {
   useOrganizations, useFederalDistricts, useRegions,
@@ -366,7 +367,7 @@ export default function StepOrganizations({ data, onChange }: Props) {
   const orgSearchContent = (
     <>
           <Card size="small" style={{ marginBottom: 16 }} title="Поиск организаций">
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+            <div className="filter-bar" style={{ marginBottom: 8 }}>
               <Select
                 placeholder="Тип организации"
                 allowClear
@@ -414,7 +415,7 @@ export default function StepOrganizations({ data, onChange }: Props) {
             </div>
 
             {searchTriggered && (
-              <Table
+              <ResponsiveTable
                 dataSource={orgList}
                 columns={columns}
                 rowKey="id"
@@ -437,7 +438,7 @@ export default function StepOrganizations({ data, onChange }: Props) {
                   Выберите минимум один регион для всех федеральных организаций.
                 </Typography.Text>
               )}
-              <Table
+              <ResponsiveTable
                 dataSource={data.selectedExternalOrgs}
                 columns={selectedColumns}
                 rowKey="id"
