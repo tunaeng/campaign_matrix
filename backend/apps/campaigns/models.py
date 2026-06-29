@@ -83,6 +83,14 @@ class Campaign(models.Model):
         related_name="campaigns",
         verbose_name="Теги",
     )
+    responsible = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="responsible_campaigns",
+        verbose_name="Ответственный",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

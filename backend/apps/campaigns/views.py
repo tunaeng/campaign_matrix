@@ -491,12 +491,12 @@ class OrganizationListCaptureRequestSerializer(serializers.Serializer):
 
 
 class CampaignViewSet(viewsets.ModelViewSet):
-    filterset_fields = ["status", "federal_operator", "project", "acting_organization"]
+    filterset_fields = ["status", "federal_operator", "project", "acting_organization", "responsible"]
     search_fields = ["name"]
 
     def get_queryset(self):
         qs = Campaign.objects.select_related(
-            "federal_operator", "created_by"
+            "federal_operator", "created_by", "responsible"
         ).prefetch_related(
             "tags",
             "queues__stage_deadlines",

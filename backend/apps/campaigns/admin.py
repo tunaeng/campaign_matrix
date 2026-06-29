@@ -43,9 +43,9 @@ class LeadInline(admin.TabularInline):
 class CampaignAdmin(admin.ModelAdmin):
     list_display = [
         "name", "status", "project", "federal_operator", "acting_organization",
-        "created_by", "created_at",
+        "responsible", "created_by", "created_at",
     ]
-    list_filter = ["status", "project", "federal_operator", "acting_organization"]
+    list_filter = ["status", "project", "federal_operator", "acting_organization", "responsible"]
     search_fields = ["name"]
     inlines = [
         CampaignFunnelInline, QueueInline, ProgramInline,

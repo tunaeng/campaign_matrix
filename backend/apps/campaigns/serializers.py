@@ -835,6 +835,7 @@ class CampaignListSerializer(serializers.ModelSerializer):
         source="acting_organization.name", read_only=True, default=None
     )
     created_by_name = serializers.SerializerMethodField()
+    responsible_name = serializers.SerializerMethodField()
     total_demand = serializers.IntegerField(read_only=True)
     organizations_count = serializers.IntegerField(read_only=True)
     leads_count = serializers.IntegerField(read_only=True)
@@ -861,6 +862,7 @@ class CampaignListSerializer(serializers.ModelSerializer):
             "project", "project_name", "acting_organization", "acting_organization_name",
             "collect_search_task",
             "created_by", "created_by_name",
+            "responsible", "responsible_name",
             "total_demand", "organizations_count", "leads_count",
             "programs_count", "regions_count", "funnel_names",
             "queue_period_start", "queue_period_end", "queue_periods",
@@ -884,6 +886,9 @@ class CampaignListSerializer(serializers.ModelSerializer):
 
     def get_created_by_name(self, obj):
         return str(obj.created_by) if obj.created_by else None
+
+    def get_responsible_name(self, obj):
+        return str(obj.responsible) if obj.responsible else None
 
     @staticmethod
     def _add_business_days(start, days):
@@ -967,6 +972,7 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
         source="acting_organization.name", read_only=True, default=None
     )
     created_by_name = serializers.SerializerMethodField()
+    responsible_name = serializers.SerializerMethodField()
     queues = CampaignQueueSerializer(many=True, read_only=True)
     campaign_funnels = CampaignFunnelSerializer(many=True, read_only=True)
     campaign_programs = CampaignProgramSerializer(many=True, read_only=True)
@@ -995,6 +1001,7 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
             "collect_search_task",
             "hypothesis", "hypothesis_result",
             "created_by", "created_by_name",
+            "responsible", "responsible_name",
             "queues", "campaign_funnels",
             "campaign_programs", "campaign_regions",
             "organizations", "leads", "subfunnels",
@@ -1019,6 +1026,9 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
 
     def get_created_by_name(self, obj):
         return str(obj.created_by) if obj.created_by else None
+
+    def get_responsible_name(self, obj):
+        return str(obj.responsible) if obj.responsible else None
 
     def get_demand_summary(self, obj):
         return campaign_demand_summary_dict(obj)
@@ -1088,6 +1098,7 @@ class CampaignCreateSerializer(serializers.ModelSerializer):
             "id", "name", "status", "federal_operator", "project", "acting_organization",
             "collect_search_task",
             "hypothesis", "hypothesis_result",
+            "responsible",
             "tags",
             "federal_operator_ids",
             "queues", "funnel_ids", "program_ids", "region_data",
