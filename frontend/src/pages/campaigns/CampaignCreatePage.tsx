@@ -72,6 +72,7 @@ export interface CampaignFormData {
   forecastDemandTotal: number | null;
   forecastDemandPerQueue: Record<number, number | null>;
   tagIds: number[];
+  responsible: number | null;
 }
 
 const initialData: CampaignFormData = {
@@ -100,6 +101,7 @@ const initialData: CampaignFormData = {
   forecastDemandTotal: null,
   forecastDemandPerQueue: {},
   tagIds: [],
+  responsible: null,
 };
 
 const COLLECT_STAGE_STORAGE_PREFIX = 'campaign-hasCollectStage-';
@@ -385,6 +387,7 @@ export default function CampaignCreatePage() {
       selectedFunnels: existingCampaign.campaign_funnels?.map((cf) => cf.funnel) ?? [],
       selectedPrograms,
       tagIds: existingCampaign.tags ?? [],
+      responsible: existingCampaign.responsible ?? null,
       queues: existingCampaign.queues?.length
         ? existingCampaign.queues.map((q) => ({
             queue_number: q.queue_number,
@@ -475,6 +478,7 @@ export default function CampaignCreatePage() {
           collect_search_task: formData.collectSearchTask,
           has_collect_stage: formData.hasCollectStage,
           tags: formData.tagIds?.length ? formData.tagIds : undefined,
+          responsible: formData.responsible,
         });
         setCampaignId(result.id);
         navigate(`/campaigns/${result.id}/edit`, { replace: true });
@@ -511,6 +515,7 @@ export default function CampaignCreatePage() {
           funnel_ids: formData.selectedFunnels,
           has_collect_stage: formData.hasCollectStage,
           tags: formData.tagIds,
+          responsible: formData.responsible,
         });
         setSaveStatus('saved');
         setTimeout(() => setSaveStatus('idle'), 2000);
@@ -532,6 +537,7 @@ export default function CampaignCreatePage() {
     formData.hypothesis,
     formData.selectedFunnels,
     formData.tagIds,
+    formData.responsible,
   ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build PATCH payload for the given step (accumulates all steps up to current)
@@ -545,6 +551,7 @@ export default function CampaignCreatePage() {
       collect_search_task: fd.collectSearchTask,
       hypothesis: fd.hypothesis,
       has_collect_stage: fd.hasCollectStage,
+      responsible: fd.responsible,
     };
     if (upToStep >= 0) {
       payload.funnel_ids = fd.selectedFunnels;
@@ -647,6 +654,7 @@ export default function CampaignCreatePage() {
         collect_search_task: formData.collectSearchTask,
         hypothesis: formData.hypothesis,
         tags: formData.tagIds,
+        responsible: formData.responsible,
         status: 'active',
         has_collect_stage: formData.hasCollectStage,
         funnel_ids: formData.selectedFunnels,
@@ -755,6 +763,7 @@ export default function CampaignCreatePage() {
         <Steps
           current={currentStep}
           size="small"
+          responsive
           onChange={handleStepClick}
           style={{ cursor: 'pointer' }}
           items={stepTitles.map((title, idx) => {

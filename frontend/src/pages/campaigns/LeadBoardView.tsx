@@ -21,6 +21,7 @@ import {
 } from '@ant-design/icons';
 import TaskEditDrawer from '../../components/TaskEditDrawer';
 import KanbanColumnHeader from '../../components/KanbanColumnHeader';
+import KanbanBoardLayout from '../../components/KanbanBoardLayout';
 import BulkSelectionToolbar from '../../components/BulkSelectionToolbar';
 import { useFunnel, usePatchLead, useBulkUpdateLeads, useBulkDeleteLeads } from '../../api/hooks';
 import type { CampaignDetail, Lead, LeadPrimaryContactBrief } from '../../types';
@@ -569,22 +570,22 @@ export default function LeadBoardView({ campaign }: Props) {
 
   return (
     <div>
-      <Row gutter={12} className="kanban-stats-row">
-        <Col span={6}>
+      <Row gutter={[12, 12]} className="kanban-stats-row">
+        <Col xs={12} md={6}>
           <Card size="small"><Statistic title="Всего лидов" value={totalLeads} prefix={<TeamOutlined />} /></Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} md={6}>
           <Card size="small"><Statistic title="Прогноз потребности" value={totalForecast} prefix={<AimOutlined />} suffix="чел." /></Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} md={6}>
           <Card size="small"><Statistic title="Чек-лист завершён" value={completedChecklist} prefix={<CheckCircleOutlined />} valueStyle={{ color: '#52c41a' }} /></Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} md={6}>
           <Card size="small"><Statistic title="В отказе" value={rejectedCount} prefix={<StopOutlined />} valueStyle={{ color: '#ff4d4f' }} /></Card>
         </Col>
       </Row>
 
-      <Space className="kanban-filters" wrap>
+      <Space className="kanban-filters filter-bar" wrap>
         <Input
           placeholder="Поиск организации"
           prefix={<SearchOutlined />}
@@ -636,7 +637,7 @@ export default function LeadBoardView({ campaign }: Props) {
         onDragCancel={() => setActiveDragLead(null)}
         onDragEnd={handleLeadDragEnd}
       >
-        <div className="kanban-board">
+        <KanbanBoardLayout className="kanban-board">
           {columns.map(stage => {
             const stageLeads = grouped[stage.id] || [];
             const columnIds = stageLeads.map((lead) => lead.id);
@@ -646,6 +647,7 @@ export default function LeadBoardView({ campaign }: Props) {
             return (
               <div key={stage.id} className={`kanban-column ${stage.is_rejection ? 'stage-rejection' : ''}`}>
                 <KanbanColumnHeader
+                  columnKey={`stage-${stage.id}`}
                   count={stageLeads.length}
                   columnIds={columnIds}
                   selectedIds={selectedLeadIds}
@@ -692,6 +694,7 @@ export default function LeadBoardView({ campaign }: Props) {
           {(grouped[0] || []).length > 0 && (
             <div className="kanban-column">
               <KanbanColumnHeader
+                columnKey="stage-none"
                 count={grouped[0].length}
                 columnIds={grouped[0].map((lead) => lead.id)}
                 selectedIds={selectedLeadIds}
@@ -724,7 +727,7 @@ export default function LeadBoardView({ campaign }: Props) {
               </KanbanDropColumn>
             </div>
           )}
-        </div>
+        </KanbanBoardLayout>
         <DragOverlay zIndex={1100} dropAnimation={null} style={{ cursor: 'grabbing' }}>
           {activeDragLead ? (
             <div className="kanban-card kanban-card--drag-overlay">

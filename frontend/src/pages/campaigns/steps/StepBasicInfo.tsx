@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Form, Input, Select, Typography, Tag, Switch } from 'antd';
 import {
-  useFederalOperators, useFunnels, useProjects, useMyActingOrganizations, useOrganizationTags, useFunnel,
+  useFederalOperators, useFunnels, useProjects, useMyActingOrganizations, useOrganizationTags, useFunnel, useUsers,
 } from '../../../api/hooks';
 import type { CampaignFormData } from '../CampaignCreatePage';
 import EntityTagSelect from '../../../components/EntityTagSelect';
@@ -19,6 +19,7 @@ export default function StepBasicInfo({ data, onChange }: Props) {
   const { data: myActingOrganizations } = useMyActingOrganizations();
   const { data: funnels } = useFunnels({ is_active: true });
   const { data: allTags } = useOrganizationTags({ page_size: 500, tag_type: 'campaigns' });
+  const { data: users } = useUsers();
   const selectedFunnelId = data.selectedFunnels[0] ?? 0;
   const { data: selectedFunnel, isFetched: funnelFetched } = useFunnel(selectedFunnelId);
   const collectStage = useMemo(
@@ -130,6 +131,21 @@ export default function StepBasicInfo({ data, onChange }: Props) {
             options={(myActingOrganizations || []).map((row) => ({
               value: row.organization,
               label: `${row.organization_name} (${row.organization_inn})`,
+            }))}
+          />
+        </Form.Item>
+
+        <Form.Item label="Ответственный за кампанию">
+          <Select
+            value={data.responsible}
+            onChange={(v) => onChange({ responsible: v ?? null })}
+            placeholder="Выберите ответственного"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={(users?.results || []).map((u) => ({
+              value: u.id,
+              label: u.full_name?.trim() || u.username,
             }))}
           />
         </Form.Item>

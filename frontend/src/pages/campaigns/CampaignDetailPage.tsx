@@ -4,6 +4,7 @@ import {
   Card, Descriptions, Tag, Tabs, Table, Spin, Typography,
   Button, Space, Statistic, Row, Col, Select, App, Progress, Segmented, InputNumber, Tooltip, Modal, Upload, Form,
 } from 'antd';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
 import { ArrowLeftOutlined, AppstoreOutlined, UnorderedListOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useCampaign, useUpdateCampaign, useDeleteCampaign, useOrganizationTags, useFunnel, useBulkUpdateLeads, useBulkDeleteLeads } from '../../api/hooks';
 import type { CampaignDetail, CampaignOrganization, Lead, LeadPrimaryContactBrief, OrganizationTag } from '../../types';
@@ -451,7 +452,7 @@ export default function CampaignDetailPage() {
               Импорт потребности по лидам
             </Button>
           </Space>
-          <Space wrap align="center" style={{ marginBottom: 12 }}>
+          <Space className="filter-bar" wrap align="center" style={{ marginBottom: 12 }}>
             <Tooltip title="Не менее столько дней с последнего взаимодействия. Лиды без касаний тоже учитываются.">
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>Касание ≥</Typography.Text>
@@ -530,7 +531,7 @@ export default function CampaignDetailPage() {
                   onClearSelection={() => setSelectedLeadIds([])}
                 />
               )}
-              <Table
+              <ResponsiveTable
                 dataSource={leadsAfterFilters}
                 columns={leadColumns}
                 rowKey="id"
@@ -555,7 +556,7 @@ export default function CampaignDetailPage() {
       key: 'programs',
       label: `Программы (${campaign.campaign_programs.length})`,
       children: (
-        <Table
+        <ResponsiveTable
           dataSource={campaign.campaign_programs}
           columns={programColumns}
           rowKey="id"
@@ -568,7 +569,7 @@ export default function CampaignDetailPage() {
       key: 'regions',
       label: `Регионы (${campaign.campaign_regions.length})`,
       children: (
-        <Table
+        <ResponsiveTable
           dataSource={campaign.campaign_regions}
           columns={regionColumns}
           rowKey="id"
@@ -581,7 +582,7 @@ export default function CampaignDetailPage() {
       key: 'organizations',
       label: `Заказчики (${campaign.organizations.length})`,
       children: (
-        <Table
+        <ResponsiveTable
           dataSource={campaign.organizations}
           columns={orgColumns}
           rowKey="id"
@@ -595,7 +596,7 @@ export default function CampaignDetailPage() {
       label: `Менеджеры (${uniqueManagers.length})`,
       children: (
         <div>
-          <Table
+          <ResponsiveTable
             dataSource={uniqueManagers}
             columns={[
               { title: 'Менеджер', dataIndex: 'name', key: 'name' },
@@ -631,7 +632,7 @@ export default function CampaignDetailPage() {
       </Space>
 
       <Card style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
           <div>
             <Typography.Title level={4} style={{ marginBottom: 8 }}>
               {campaign.name}
@@ -678,20 +679,20 @@ export default function CampaignDetailPage() {
           </Space>
         </div>
 
-        <Row gutter={16} style={{ marginTop: 16 }}>
-          <Col span={4}>
+        <Row gutter={[16, 12]} style={{ marginTop: 16 }}>
+          <Col xs={12} sm={8} xl={4}>
             <Statistic title="Потребность (план, Σ)" value={campaign.total_demand} suffix="чел." />
           </Col>
-          <Col span={4}>
+          <Col xs={12} sm={8} xl={4}>
             <Statistic title="Лидов" value={leads.length} />
           </Col>
-          <Col span={4}>
+          <Col xs={12} sm={8} xl={4}>
             <Statistic title="Программ" value={campaign.campaign_programs.length} />
           </Col>
-          <Col span={4}>
+          <Col xs={12} sm={8} xl={4}>
             <Statistic title="Регионов" value={distinctCampaignRegionsCount} />
           </Col>
-          <Col span={4}>
+          <Col xs={12} sm={8} xl={4}>
             <Statistic title="Менеджеров" value={uniqueManagers.length} />
           </Col>
         </Row>
@@ -716,6 +717,9 @@ export default function CampaignDetailPage() {
           </Descriptions.Item>
           <Descriptions.Item label="Наша организация">
             {campaign.acting_organization_name || '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Ответственный">
+            {campaign.responsible_name || '—'}
           </Descriptions.Item>
           <Descriptions.Item label="Создал">
             {campaign.created_by_name || '—'}

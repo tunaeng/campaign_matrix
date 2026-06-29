@@ -2,42 +2,52 @@
   display: flex;
   gap: 12px;
   overflow-x: auto;
+  overflow-y: hidden;
   padding-bottom: 8px;
-  min-height: 400px;
+  min-height: 320px;
+  align-items: stretch;
 }
 
 .kanban-column {
   flex: 1 0 280px;
   min-width: 280px;
   max-width: 380px;
+  max-height: 100%;
+  min-height: 0;
   background: #fafafa;
   border-radius: 8px;
   padding: 12px;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .kanban-column-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 8px;
+  box-sizing: border-box;
   margin-bottom: 10px;
   padding-bottom: 8px;
   border-bottom: 2px solid #e8e8e8;
+  flex-shrink: 0;
+  /* Высота и линия снизу — по самому высокому заголовку на доске (KanbanBoardLayout) */
+  min-height: var(--kanban-header-sync-height, auto);
 }
 
 .kanban-column-header-main {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  flex: 1;
+  width: 100%;
   min-width: 0;
 }
 
 .kanban-column-header-text {
-  flex: 1;
+  flex: 0 0 auto;
+  width: var(--kanban-title-slot-width, max-content);
+  max-width: calc(100% - 48px);
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .kanban-column-select {
@@ -49,6 +59,17 @@
   margin: 0;
   font-size: 14px;
   font-weight: 600;
+  line-height: 1.35;
+}
+
+/* Дедлайн стадии (LeadBoardView) */
+.kanban-column-header-text > span {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .kanban-column-count {
@@ -58,11 +79,17 @@
   font-size: 12px;
   font-weight: 600;
   line-height: 20px;
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 1px;
 }
 
 .kanban-cards {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -652,4 +679,55 @@
 .kanban-card-dates-muted {
   color: #8c8c8c;
   margin-top: 2px;
+}
+
+/* ---------- Campaigns: без вертикального скролла страницы; колонки — горизонтальный скролл ---------- */
+
+@media (min-width: 768px) {
+  .app-content:has(.campaigns-page--board) {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    overflow-y: hidden;
+    height: calc(100dvh - 48px);
+    box-sizing: border-box;
+  }
+
+  .campaigns-page--board {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    overflow-y: hidden;
+  }
+
+  .campaigns-page--board .campaigns-page__toolbar {
+    flex-shrink: 0;
+  }
+
+  .campaigns-page--board .campaigns-board-view {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    overflow-y: hidden;
+  }
+
+  .campaigns-page--board .kanban-stats-row,
+  .campaigns-page--board .kanban-filters {
+    flex-shrink: 0;
+  }
+
+  .campaigns-page--board .campaigns-board-view > .ant-alert {
+    flex-shrink: 0;
+  }
+
+  .campaigns-page--board .kanban-board {
+    flex: 1;
+    min-height: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
 }

@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, Table, Tag, Button, Space, Select, Typography, Input, Popconfirm, App, Segmented, Alert, Modal, Form } from 'antd';
 import { PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, AppstoreOutlined, UnorderedListOutlined } from '@ant-design/icons';
-import { useCampaigns, useDeleteCampaign, useOrganizationTags, useBulkUpdateCampaigns, useBulkDeleteCampaigns } from '../../api/hooks';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
+import { useCampaigns, useDeleteCampaign, useOrganizationTags, useBulkUpdateCampaigns, useBulkDeleteCampaigns, useUsers } from '../../api/hooks';
 import { getAxiosErrorMessage } from '../../api/errorMessage';
 import type { Campaign } from '../../types';
 import CampaignBoardView from './CampaignBoardView';
+import './BoardStyles.css';
 import EntityTagSelect, { renderTagChips } from '../../components/EntityTagSelect';
 import BulkSelectionToolbar from '../../components/BulkSelectionToolbar';
 
@@ -36,9 +38,11 @@ export default function CampaignListPage() {
   const bulkUpdateCampaigns = useBulkUpdateCampaigns();
   const bulkDeleteCampaigns = useBulkDeleteCampaigns();
   const { data: tagsCatalog } = useOrganizationTags({ page_size: 500, tag_type: 'campaigns' });
+  const { data: usersData } = useUsers();
   const [viewMode, setViewMode] = useState<'table' | 'board'>('board');
   const [statusFilter, setStatusFilter] = useState<string>();
   const [tagFilter, setTagFilter] = useState<number[]>([]);
+  const [responsibleFilter, setResponsibleFilter] = useState<number>();
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [ordering, setOrdering] = useState<string>();
@@ -49,9 +53,15 @@ export default function CampaignListPage() {
     status: statusFilter,
     search: search || undefined,
     tags: tagFilter.length ? tagFilter.join(',') : undefined,
+    responsible: responsibleFilter,
     page,
     ordering,
   });
+
+  const userOptions = (usersData?.results || []).map((u) => ({
+    value: u.id,
+    label: u.full_name?.trim() || u.username,
+  }));
 
   const bulkBusy = bulkUpdateCampaigns.isPending || bulkDeleteCampaigns.isPending;
 
@@ -124,6 +134,13 @@ export default function CampaignListPage() {
           </span>
         );
       },
+    },
+    {
+      title: 'Ответственный',
+      dataIndex: 'responsible_name',
+      key: 'responsible',
+      width: 160,
+      render: (v: string | null) => v || '—',
     },
     {
       title: 'Программ',
@@ -254,8 +271,8 @@ export default function CampaignListPage() {
   };
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+    <div className={viewMode === 'board' ? 'campaigns-page campaigns-page--board' : 'campaigns-page'}>
+      <div className="campaigns-page__toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           Кампании по сбору потребности
         </Typography.Title>
@@ -279,7 +296,13 @@ export default function CampaignListPage() {
       </div>
 
       {viewMode === 'board' ? (
-        <CampaignBoardView tagsFilter={tagFilter} onTagsFilterChange={setTagFilter} />
+        <CampaignBoardView
+          tagsFilter={tagFilter}
+          onTagsFilterChange={setTagFilter}
+          responsibleFilter={responsibleFilter}
+          onResponsibleFilterChange={setResponsibleFilter}
+          userOptions={userOptions}
+        />
       ) : (
       <Card>
         {isError && (
@@ -296,7 +319,7 @@ export default function CampaignListPage() {
             }
           />
         )}
-        <Space style={{ marginBottom: 16 }}>
+        <Space className="filter-bar" style={{ marginBottom: 16 }} wrap>
           <Input
             placeholder="Поиск по названию"
             prefix={<SearchOutlined />}
@@ -317,6 +340,16 @@ export default function CampaignListPage() {
               { value: 'paused', label: 'Приостановлена' },
               { value: 'completed', label: 'Завершена' },
             ]}
+          />
+          <Select
+            placeholder="Ответственный"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            style={{ width: 200 }}
+            value={responsibleFilter}
+            onChange={(v) => { setResponsibleFilter(v); setPage(1); }}
+            options={userOptions}
           />
           <EntityTagSelect
             availableTags={tagsCatalog?.results ?? []}
@@ -340,7 +373,7 @@ export default function CampaignListPage() {
           />
         )}
 
-        <Table
+        <ResponsiveTable
           dataSource={data?.results || []}
           columns={columns}
           rowKey="id"

@@ -209,6 +209,8 @@ export interface Campaign {
   collect_search_task?: string;
   created_by: number | null;
   created_by_name: string | null;
+  responsible: number | null;
+  responsible_name: string | null;
   total_demand: number;
   organizations_count: number;
   leads_count?: number;

@@ -14,7 +14,7 @@ import {
 import { Row, Col, Statistic, Card, Tag, Input, Select, Space, Spin, Alert, Button, App, Checkbox, Typography, Modal, Form } from 'antd';
 import {
   TeamOutlined, RocketOutlined, AppstoreOutlined, AimOutlined, SearchOutlined,
-  CalendarOutlined,
+  CalendarOutlined, UserOutlined,
 } from '@ant-design/icons';
 import { useCampaigns, usePatchCampaign, useOrganizationTags, useBulkUpdateCampaigns, useBulkDeleteCampaigns } from '../../api/hooks';
 import { getAxiosErrorMessage } from '../../api/errorMessage';
@@ -22,6 +22,7 @@ import type { Campaign } from '../../types';
 import DemandQuotaPreview from '../../components/DemandQuotaPreview';
 import EntityTagSelect from '../../components/EntityTagSelect';
 import KanbanColumnHeader from '../../components/KanbanColumnHeader';
+import KanbanBoardLayout from '../../components/KanbanBoardLayout';
 import BulkSelectionToolbar from '../../components/BulkSelectionToolbar';
 import { toggleItemSelection } from '../../utils/kanbanSelection';
 import './BoardStyles.css';
@@ -65,6 +66,11 @@ function CampaignCardFace({ c }: { c: Campaign }) {
         ))}
       </div>
       <div className="kanban-card-stats">
+        {c.responsible_name && (
+          <span className="kanban-card-stat" title="Ответственный">
+            <UserOutlined /> {c.responsible_name}
+          </span>
+        )}
         <span className="kanban-card-stat">
           <TeamOutlined /> {c.leads_count ?? 0} лидов
         </span>
@@ -114,7 +120,6 @@ function CampaignCardFace({ c }: { c: Campaign }) {
 type BoardColumnKey = Campaign['status'] | 'organization_list';
 
 const BOARD_COLUMNS: { key: BoardColumnKey; label: string; columnClass: string }[] = [
-  { key: 'draft', label: 'Черновик', columnClass: 'status-draft' },
   {
     key: 'organization_list',
     label: 'Формирование перечня организаций',
@@ -123,6 +128,7 @@ const BOARD_COLUMNS: { key: BoardColumnKey; label: string; columnClass: string }
   { key: 'active', label: 'В работе', columnClass: 'status-active' },
   { key: 'paused', label: 'Приостановлена', columnClass: 'status-paused' },
   { key: 'completed', label: 'Завершена', columnClass: 'status-completed' },
+  { key: 'draft', label: 'Черновик', columnClass: 'status-draft' },
 ];
 
 const BOARD_COLUMN_OPTIONS = BOARD_COLUMNS.map((col) => ({
@@ -215,9 +221,18 @@ function CampaignBoardCard({
 interface CampaignBoardViewProps {
   tagsFilter?: number[];
   onTagsFilterChange?: (tagIds: number[]) => void;
+  responsibleFilter?: number;
+  onResponsibleFilterChange?: (userId: number | undefined) => void;
+  userOptions?: { value: number; label: string }[];
 }
 
-export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: CampaignBoardViewProps) {
+export default function CampaignBoardView({
+  tagsFilter,
+  onTagsFilterChange,
+  responsibleFilter,
+  onResponsibleFilterChange,
+  userOptions = [],
+}: CampaignBoardViewProps) {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const patchCampaign = usePatchCampaign();
@@ -236,7 +251,7 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
 
   useEffect(() => {
     setSelectedCampaignIds([]);
-  }, [search, foFilter, tagsFilter]);
+  }, [search, foFilter, tagsFilter, responsibleFilter]);
 
   const selectedCampaignSet = useMemo(() => new Set(selectedCampaignIds), [selectedCampaignIds]);
 
@@ -286,6 +301,7 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
   const { data, isLoading, isError, error, refetch } = useCampaigns({
     page_size: 500,
     tags: tagsFilter?.length ? tagsFilter.join(',') : undefined,
+    responsible: responsibleFilter,
   });
   const allCampaigns = data?.results || [];
 
@@ -393,12 +409,12 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
   }
 
   return (
-    <div>
-      <Row gutter={16} className="kanban-stats-row">
-        <Col span={6}>
+    <div className="campaigns-board-view">
+      <Row gutter={[16, 12]} className="kanban-stats-row">
+        <Col xs={12} md={6}>
           <Card size="small"><Statistic title="Всего кампаний" value={allCampaigns.length} prefix={<AppstoreOutlined />} /></Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} md={6}>
           <Card size="small">
             <Statistic
               title="В работе"
@@ -408,15 +424,15 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
             />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} md={6}>
           <Card size="small"><Statistic title="Лидов всего" value={totalLeads} prefix={<TeamOutlined />} /></Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} md={6}>
           <Card size="small"><Statistic title="Прогноз потребности" value={totalDemand} prefix={<AimOutlined />} suffix="чел." /></Card>
         </Col>
       </Row>
 
-      <Space className="kanban-filters" wrap>
+      <Space className="kanban-filters filter-bar" wrap>
         <Input
           placeholder="Поиск по названию"
           prefix={<SearchOutlined />}
@@ -433,6 +449,18 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
           onChange={setFoFilter}
           options={foOptions}
         />
+        {onResponsibleFilterChange ? (
+          <Select
+            placeholder="Ответственный"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            style={{ width: 200 }}
+            value={responsibleFilter}
+            onChange={onResponsibleFilterChange}
+            options={userOptions}
+          />
+        ) : null}
         {onTagsFilterChange ? (
           <EntityTagSelect
             availableTags={tagsCatalog?.results ?? []}
@@ -464,13 +492,14 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
         onDragCancel={() => setActiveDragCampaign(null)}
         onDragEnd={handleCampaignDragEnd}
       >
-        <div className="kanban-board">
+        <KanbanBoardLayout className="kanban-board">
           {BOARD_COLUMNS.map(col => {
             const columnCampaigns = grouped[col.key];
             const columnIds = columnCampaigns.map((campaignItem) => campaignItem.id);
             return (
             <div key={col.key} className={`kanban-column ${col.columnClass}`}>
               <KanbanColumnHeader
+                columnKey={col.key}
                 count={columnCampaigns.length}
                 columnIds={columnIds}
                 selectedIds={selectedCampaignIds}
@@ -500,7 +529,7 @@ export default function CampaignBoardView({ tagsFilter, onTagsFilterChange }: Ca
             </div>
             );
           })}
-        </div>
+        </KanbanBoardLayout>
         <DragOverlay zIndex={1100} dropAnimation={null} style={{ cursor: 'grabbing' }}>
           {activeDragCampaign ? (
             <div className="kanban-card kanban-card--drag-overlay">

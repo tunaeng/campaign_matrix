@@ -50,8 +50,10 @@ import {
   DeleteOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import ResponsiveTable from '../../components/responsive/ResponsiveTable';
 import TaskEditDrawer from '../../components/TaskEditDrawer';
 import KanbanColumnHeader from '../../components/KanbanColumnHeader';
+import KanbanBoardLayout from '../../components/KanbanBoardLayout';
 import {
   useBulkUpdateLeadSubfunnels,
   useBulkUpdateLeadSubfunnelChecklist,
@@ -672,19 +674,19 @@ export default function SubfunnelWorkspacePage() {
         />
       </div>
 
-      <Row gutter={16} className="kanban-stats-row">
-        <Col span={8}>
+      <Row gutter={[16, 12]} className="kanban-stats-row">
+        <Col xs={24} sm={8}>
           <Card size="small"><Statistic title="Всего задач" value={data?.totals.all || 0} prefix={<AppstoreOutlined />} /></Card>
         </Col>
-        <Col span={8}>
+        <Col xs={12} sm={8}>
           <Card size="small"><Statistic title="Просрочено" value={data?.totals.overdue || 0} prefix={<FieldTimeOutlined />} valueStyle={{ color: '#cf1322' }} /></Card>
         </Col>
-        <Col span={8}>
+        <Col xs={12} sm={8}>
           <Card size="small"><Statistic title="Исполнителей" value={new Set((data?.table || []).map((x) => x.assignee_id).filter(Boolean)).size} prefix={<TeamOutlined />} /></Card>
         </Col>
       </Row>
 
-      <Space className="kanban-filters" wrap>
+      <Space className="kanban-filters filter-bar" wrap>
         <Input
           placeholder="Поиск по лиду/кампании/исполнителю"
           prefix={<SearchOutlined />}
@@ -757,13 +759,14 @@ export default function SubfunnelWorkspacePage() {
           onDragCancel={() => setActiveDragItem(null)}
           onDragEnd={handleDragEnd}
         >
-          <div className="kanban-board">
+          <KanbanBoardLayout className="kanban-board">
             {(data?.columns || []).map((col) => {
               const items = filteredByStatus.get(col.status) || [];
               const columnIds = items.map((item) => item.id);
               return (
                 <div key={col.status} className="kanban-column">
                   <KanbanColumnHeader
+                    columnKey={col.status}
                     count={items.length}
                     columnIds={columnIds}
                     selectedIds={selectedRowKeys}
@@ -793,7 +796,7 @@ export default function SubfunnelWorkspacePage() {
                 </div>
               );
             })}
-          </div>
+          </KanbanBoardLayout>
           <DragOverlay>
             {activeDragItem ? (
               <div className="kanban-card kanban-card--task kanban-card--drag-overlay">
@@ -804,7 +807,7 @@ export default function SubfunnelWorkspacePage() {
         </DndContext>
       ) : (
         <Card>
-          <Table
+          <ResponsiveTable
             rowKey="id"
             size="small"
             loading={bulkBusy}
